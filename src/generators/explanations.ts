@@ -249,6 +249,64 @@ timer.enable_pwm();       // start outputting
       'For ESC motor control: typical 400 Hz PWM, duty cycle controls throttle percentage.',
     ],
   },
+  spi_controller: {
+    summary: 'SPI Controller (Master) – serial interface for communicating with sensors like IMUs, barometers, and flash memory.',
+    kind: 'system',
+    kindLabel: 'System – SPI Peripheral',
+    verilogMapping: `Shift registers in \`always @(posedge clk)\`. MOSI driven from TX shift register MSB. MISO sampled into RX shift register.`,
+    firmwareInteraction: 'Write TX_DATA to start a transfer, poll STATUS.BUSY or wait for IRQ, read RX_DATA for the response.',
+    rustView: `\`spi.configure(false, false, 4); // Mode 0, div=4
+let accel_x = spi.read_register(0x3B); // MPU6050 ACCEL_XOUT_H\``,
+    teachingPoints: [
+      'SPI is full-duplex: data goes both directions simultaneously on every clock cycle.',
+      'MOSI (Master Out, Slave In) carries the address/command to the sensor.',
+      'MISO (Master In, Slave Out) carries data back from the sensor.',
+      'CS_N (Chip Select, active low) tells the sensor "you are being talked to."',
+      'CPOL/CPHA (clock polarity/phase) must match the sensor datasheet.',
+      'The SPI clock is much slower than the system clock – the divider ratio matters.',
+      'Every flight controller uses SPI to talk to its IMU sensor (MPU6050, ICM-20948).',
+    ],
+  },
+
+  pid_controller: {
+    summary: 'PID Controller – hardware feedback loop that computes a correction signal from the error between setpoint and measured value.',
+    kind: 'system',
+    kindLabel: 'System – Control Loop',
+    verilogMapping: `Fixed-point (Q8.8) multiply-accumulate in \`always @(posedge clk)\`. Output clamped to 8 bits.`,
+    firmwareInteraction: 'Firmware sets Kp/Ki/Kd gains and setpoint. Hardware computes output autonomously on each update tick.',
+    rustView: `\`pid.configure(q8_8(1, 128), q8_8(0, 10), q8_8(0, 50)); // Kp=1.5, Ki=0.04, Kd=0.2
+let motor_cmd = pid.read_output(); // feed to PWM\``,
+    teachingPoints: [
+      'P (Proportional): immediate response proportional to error. Too much → oscillation.',
+      'I (Integral): eliminates steady-state error over time. Too much → slow overshoot.',
+      'D (Derivative): dampens rate of change. Too much → noise sensitivity, jitter.',
+      'Gains are Q8.8 fixed-point: 0x0180 = 1.5, avoiding need for a floating-point unit.',
+      'Anti-windup clamps the integral to prevent unbounded growth when output is saturated.',
+      'Output (0–255) maps directly to PWM duty cycle for motor speed control.',
+      'Each axis (roll, pitch, yaw) has its own PID loop in a flight controller.',
+      'Real flight controllers run the PID loop at 500–8000 Hz.',
+    ],
+  },
+
+  adc: {
+    summary: 'ADC (Analog-to-Digital Converter) – converts continuous analog voltages to digital numbers. Essential for battery monitoring.',
+    kind: 'system',
+    kindLabel: 'System – ADC Peripheral',
+    verilogMapping: `State machine: IDLE → SAMPLING → CONVERTING → DONE in \`always @(posedge clk)\`. Sample-and-hold register latches input.`,
+    firmwareInteraction: 'Firmware triggers conversion, waits for EOC flag, reads DATA. Watchdog thresholds automate voltage monitoring.',
+    rustView: `\`adc.start_conversion();
+while adc.is_busy() {}
+let voltage = adc.read_result();\``,
+    teachingPoints: [
+      'ADCs convert continuous analog voltages to discrete digital numbers.',
+      'Sample-and-hold: the ADC takes a snapshot so the value is stable during conversion.',
+      '8-bit resolution = 256 levels. For a 5V reference, each step ≈ 19.5 mV.',
+      'Battery voltage divider: a 4S LiPo (16.8V max) needs a divider to fit the ADC range.',
+      'Watchdog thresholds let hardware detect dangerous voltage without firmware polling.',
+      'Continuous mode auto-retriggers conversion for periodic monitoring.',
+      'In a flight controller: ADC watchdog triggers failsafe landing if battery is critical.',
+    ],
+  },
 };
 
 export function getExplanation(type: NodeType): ComponentExplanation {

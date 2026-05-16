@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import type {
   CircuitNode, SignalMap, NodeType,
   InputPinProperties, OutputPinProperties, MmioRegisterProperties, TimerPwmProperties,
+  SpiControllerProperties, PidControllerProperties, AdcProperties,
 } from '../simulator/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -23,6 +24,9 @@ export const NODE_DIMS: Record<NodeType, { w: number; h: number }> = {
   mmio_register:    { w: 140, h: 130 },
   interrupt_output: { w: 60,  h: 40 },
   timer_pwm_capture: { w: 140, h: 100 },
+  spi_controller:    { w: 140, h: 110 },
+  pid_controller:    { w: 140, h: 110 },
+  adc:               { w: 140, h: 100 },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -422,6 +426,162 @@ export function NodeView({
       break;
     }
 
+    case 'spi_controller': {
+      const spiProps = node.properties as SpiControllerProperties;
+      const spiVals = node.state.mmioValues ?? {};
+      const spiIrq = node.state.irqAsserted;
+      const spiBusy = node.state.spiState?.busy ?? false;
+      const spiBitCnt = node.state.spiState?.bitCounter ?? 0;
+      const spiRxData = spiVals['RX_DATA'] ?? 0;
+      body = (
+        <g style={{ filter: flashFilter }}>
+          <rect x={2} y={2} width={w-4} height={h-4} rx={6} fill="#1a1f2e" stroke={spiIrq ? '#f59e0b' : strokeColor} strokeWidth={spiIrq ? 2 : strokeWidth} />
+          <rect x={2} y={2} width={w-4} height={20} rx={6} fill="#0a1628" />
+          <rect x={2} y={12} width={w-4} height={10} fill="#0a1628" />
+          <text x={w/2} y={16} textAnchor="middle" fontSize={8} fontWeight={700} fill="#22d3ee" className="select-none">
+            SPI · {spiProps.moduleName}
+          </text>
+          {/* Shift register visualization */}
+          {Array.from({length: 8}, (_, i) => {
+            const filled = spiBusy && i < spiBitCnt;
+            return (
+              <rect key={i} x={10 + i * 15} y={28} width={12} height={10} rx={1}
+                fill={filled ? '#22d3ee' : '#1e293b'} stroke="#334155" strokeWidth={1}
+              />
+            );
+          })}
+          <text x={10} y={52} fontSize={7} fill="#64748b" fontFamily="monospace" className="select-none">
+            {spiBusy ? `TX bit ${spiBitCnt}/8` : 'IDLE'}
+          </text>
+          <text x={w-10} y={52} textAnchor="end" fontSize={7} fill="#64748b" fontFamily="monospace" className="select-none">
+            RX: 0x{spiRxData.toString(16).padStart(2, '0').toUpperCase()}
+          </text>
+          {/* CS and SCLK indicators */}
+          <text x={10} y={68} fontSize={7} fill={node.state.spiState?.csAsserted ? '#22d3ee' : '#475569'} fontFamily="monospace" className="select-none">
+            CS: {node.state.spiState?.csAsserted ? 'LOW' : 'HIGH'}
+          </text>
+          <text x={w-10} y={68} textAnchor="end" fontSize={7} fill="#64748b" fontFamily="monospace" className="select-none">
+            CLK_DIV: {spiVals['CLK_DIV'] ?? 2}
+          </text>
+          {/* SCLK waveform */}
+          <polyline
+            points={`10,80 10,76 25,76 25,80 40,80 40,76 55,76 55,80 70,80 70,76 85,76 85,80 100,80 100,76 115,76 115,80`}
+            fill="none" stroke="#22d3ee" strokeWidth={1} opacity={spiBusy ? 0.8 : 0.2}
+          />
+          {spiIrq && (
+            <text x={w/2} y={h-6} textAnchor="middle" fontSize={7} fill="#f59e0b" fontWeight={700} className="select-none">
+              IRQ
+            </text>
+          )}
+        </g>
+      );
+      break;
+    }
+
+    case 'pid_controller': {
+      const pidProps = node.properties as PidControllerProperties;
+      const pidVals = node.state.mmioValues ?? {};
+      const pidIrq = node.state.irqAsserted;
+      const pidOutput = node.state.pidState?.output ?? 0;
+      const pidError = node.state.pidState?.error ?? 0;
+      const pidKp = pidVals['KP'] ?? 0x0180;
+      body = (
+        <g style={{ filter: flashFilter }}>
+          <rect x={2} y={2} width={w-4} height={h-4} rx={6} fill="#1a1f2e" stroke={pidIrq ? '#f59e0b' : strokeColor} strokeWidth={pidIrq ? 2 : strokeWidth} />
+          <rect x={2} y={2} width={w-4} height={20} rx={6} fill="#0a1628" />
+          <rect x={2} y={12} width={w-4} height={10} fill="#0a1628" />
+          <text x={w/2} y={16} textAnchor="middle" fontSize={8} fontWeight={700} fill="#a78bfa" className="select-none">
+            PID · {pidProps.moduleName}
+          </text>
+          {/* Output bar */}
+          <text x={10} y={34} fontSize={7} fill="#64748b" className="select-none">Output</text>
+          <rect x={10} y={38} width={w-20} height={6} rx={2} fill="#1e293b" />
+          <rect x={10} y={38} width={Math.max(1, ((w-20) * pidOutput) / 255)} height={6} rx={2} fill="#a78bfa" opacity={0.8} />
+          {/* Error display */}
+          <text x={10} y={58} fontSize={7} fill="#64748b" fontFamily="monospace" className="select-none">
+            ERR: {pidError >= 0 ? '+' : ''}{pidError}
+          </text>
+          <text x={w-10} y={58} textAnchor="end" fontSize={7} fill="#a78bfa" fontFamily="monospace" className="select-none">
+            OUT: {pidOutput}
+          </text>
+          {/* Gain display */}
+          <text x={10} y={72} fontSize={6} fill="#475569" fontFamily="monospace" className="select-none">
+            Kp:{(pidKp / 256).toFixed(1)} Ki:{((pidVals['KI'] ?? 0) / 256).toFixed(2)} Kd:{((pidVals['KD'] ?? 0) / 256).toFixed(2)}
+          </text>
+          {/* Integral bar */}
+          <text x={10} y={84} fontSize={6} fill="#475569" className="select-none">I_ACCUM</text>
+          <rect x={10} y={87} width={w-20} height={4} rx={1} fill="#1e293b" />
+          {(() => {
+            const iAccum = node.state.pidState?.integral ?? 0;
+            const normalized = (iAccum + 2048) / 4096;
+            return <rect x={10} y={87} width={Math.max(1, (w-20) * normalized)} height={4} rx={1} fill="#6d28d9" opacity={0.6} />;
+          })()}
+          {pidIrq && (
+            <text x={w/2} y={h-6} textAnchor="middle" fontSize={7} fill="#f59e0b" fontWeight={700} className="select-none">
+              IRQ
+            </text>
+          )}
+        </g>
+      );
+      break;
+    }
+
+    case 'adc': {
+      const adcProps = node.properties as AdcProperties;
+      const adcVals = node.state.mmioValues ?? {};
+      const adcIrq = node.state.irqAsserted;
+      const adcPhase = node.state.adcState?.phase ?? 'idle';
+      const adcData = adcVals['DATA'] ?? 0;
+      const adcWdg = node.state.adcState?.watchdogTripped ?? false;
+      body = (
+        <g style={{ filter: flashFilter }}>
+          <rect x={2} y={2} width={w-4} height={h-4} rx={6} fill="#1a1f2e" stroke={adcWdg ? '#ef4444' : adcIrq ? '#f59e0b' : strokeColor} strokeWidth={adcWdg ? 2 : adcIrq ? 2 : strokeWidth} />
+          <rect x={2} y={2} width={w-4} height={20} rx={6} fill="#0a1628" />
+          <rect x={2} y={12} width={w-4} height={10} fill="#0a1628" />
+          <text x={w/2} y={16} textAnchor="middle" fontSize={8} fontWeight={700} fill="#10b981" className="select-none">
+            ADC · {adcProps.moduleName}
+          </text>
+          {/* Result display */}
+          <text x={w/2} y={40} textAnchor="middle" fontSize={16} fontWeight={700} fill="#10b981" fontFamily="monospace" className="select-none">
+            0x{adcData.toString(16).padStart(2, '0').toUpperCase()}
+          </text>
+          {/* Phase indicator */}
+          <text x={10} y={58} fontSize={7} fill="#64748b" fontFamily="monospace" className="select-none">
+            {adcPhase.toUpperCase()}
+          </text>
+          <text x={w-10} y={58} textAnchor="end" fontSize={7} fill="#64748b" fontFamily="monospace" className="select-none">
+            DEC: {adcData}
+          </text>
+          {/* Level bar */}
+          <rect x={10} y={64} width={w-20} height={6} rx={2} fill="#1e293b" />
+          <rect x={10} y={64} width={Math.max(1, ((w-20) * adcData) / 255)} height={6} rx={2} fill={adcWdg ? '#ef4444' : '#10b981'} opacity={0.8} />
+          {/* Threshold markers */}
+          {(() => {
+            const thLo = adcVals['THRESHOLD_LO'] ?? 0;
+            const thHi = adcVals['THRESHOLD_HI'] ?? 255;
+            const barW = w - 20;
+            return (
+              <>
+                <line x1={10 + (barW * thLo / 255)} y1={63} x2={10 + (barW * thLo / 255)} y2={71} stroke="#ef4444" strokeWidth={1} opacity={0.6} />
+                <line x1={10 + (barW * thHi / 255)} y1={63} x2={10 + (barW * thHi / 255)} y2={71} stroke="#ef4444" strokeWidth={1} opacity={0.6} />
+              </>
+            );
+          })()}
+          {adcWdg && (
+            <text x={w/2} y={h-6} textAnchor="middle" fontSize={7} fill="#ef4444" fontWeight={700} className="select-none">
+              WATCHDOG
+            </text>
+          )}
+          {adcIrq && !adcWdg && (
+            <text x={w/2} y={h-6} textAnchor="middle" fontSize={7} fill="#f59e0b" fontWeight={700} className="select-none">
+              IRQ
+            </text>
+          )}
+        </g>
+      );
+      break;
+    }
+
     case 'interrupt_output': {
       const irqSig = node.inputPorts[0] ? getPortSignal(signals, node.inputPorts[0].id) : 'x';
       const active = irqSig === 1;
@@ -462,7 +622,7 @@ export function NodeView({
       {body}
 
       {/* Node label (skip for types that draw their own) */}
-      {!['input_pin', 'output_pin', 'mmio_register', 'interrupt_output', 'counter8', 'register8', 'dff', 'timer_pwm_capture'].includes(node.type) && (
+      {!['input_pin', 'output_pin', 'mmio_register', 'interrupt_output', 'counter8', 'register8', 'dff', 'timer_pwm_capture', 'spi_controller', 'pid_controller', 'adc'].includes(node.type) && (
         <text x={w/2} y={-6} textAnchor="middle" fontSize={8} fill="#64748b" className="select-none">
           {node.label}
         </text>

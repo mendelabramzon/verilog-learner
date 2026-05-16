@@ -18,7 +18,10 @@ export type NodeType =
   | 'mux2to1'
   | 'mmio_register'
   | 'interrupt_output'
-  | 'timer_pwm_capture';
+  | 'timer_pwm_capture'
+  | 'spi_controller'
+  | 'pid_controller'
+  | 'adc';
 
 // Signal value: 0, 1, or unknown/uninitialized
 export type SignalValue = 0 | 1 | 'x';
@@ -85,6 +88,21 @@ export interface TimerPwmProperties {
   baseAddress: string;
   registers: MmioRegDef[];
 }
+export interface SpiControllerProperties {
+  moduleName: string;
+  baseAddress: string;
+  registers: MmioRegDef[];
+}
+export interface PidControllerProperties {
+  moduleName: string;
+  baseAddress: string;
+  registers: MmioRegDef[];
+}
+export interface AdcProperties {
+  moduleName: string;
+  baseAddress: string;
+  registers: MmioRegDef[];
+}
 
 export type NodeProperties =
   | InputPinProperties
@@ -97,7 +115,10 @@ export type NodeProperties =
   | Mux2to1Properties
   | MmioRegisterProperties
   | InterruptProperties
-  | TimerPwmProperties;
+  | TimerPwmProperties
+  | SpiControllerProperties
+  | PidControllerProperties
+  | AdcProperties;
 
 // Sequential state stored per node (mutable during simulation steps)
 export interface NodeState {
@@ -118,6 +139,33 @@ export interface NodeState {
     prescalerTick: number;
     count: number;
     prevCaptureIn: SignalValue;
+  };
+  /** SPI controller internal state */
+  spiState?: {
+    shiftRegTx: number;
+    shiftRegRx: number;
+    bitCounter: number;
+    sclkDivCounter: number;
+    sclkPhase: 0 | 1;
+    busy: boolean;
+    csAsserted: boolean;
+  };
+  /** PID controller internal state */
+  pidState?: {
+    prevError: number;
+    integral: number;
+    output: number;
+    error: number;
+    updateComplete: boolean;
+  };
+  /** ADC internal state */
+  adcState?: {
+    sampleValue: number;
+    convertedValue: number;
+    sampleCounter: number;
+    phase: 'idle' | 'sampling' | 'converting' | 'done';
+    convertBit: number;
+    watchdogTripped: boolean;
   };
 }
 
@@ -190,6 +238,18 @@ export const NODE_PORT_TEMPLATES: Record<
     inputs:  [port('clk', 'clk'), port('rst', 'rst'), port('capture_in', 'cap_in')],
     outputs: [port('pwm0', 'pwm0'), port('pwm1', 'pwm1'), port('irq', 'irq')],
   },
+  spi_controller: {
+    inputs:  [port('clk', 'clk'), port('rst', 'rst'), port('miso', 'miso')],
+    outputs: [port('sclk', 'sclk'), port('mosi', 'mosi'), port('cs_n', 'cs_n'), port('data_out', 'data_out', 8), port('irq', 'irq')],
+  },
+  pid_controller: {
+    inputs:  [port('clk', 'clk'), port('rst', 'rst'), port('setpoint', 'setpoint', 8), port('measured', 'measured', 8), port('update', 'update')],
+    outputs: [port('output', 'output', 8), port('error', 'error', 8), port('irq', 'irq')],
+  },
+  adc: {
+    inputs:  [port('clk', 'clk'), port('rst', 'rst'), port('analog_in', 'analog_in', 8), port('trigger', 'trigger')],
+    outputs: [port('data_out', 'data_out', 8), port('eoc', 'eoc'), port('irq', 'irq')],
+  },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -233,6 +293,48 @@ export function defaultProperties(type: NodeType, index: number): NodeProperties
         { name: 'COUNT',    offset: 0x18, width: 16, access: 'ro', description: 'Current counter value', value: 0 },
         { name: 'STATUS',   offset: 0x1C, width: 16, access: 'ro', description: 'OVF|CMP0|CMP1|CAP flags', value: 0 },
         { name: 'IRQ_CLR',  offset: 0x20, width: 16, access: 'wo', description: 'Write bitmask to clear flags', value: 0 },
+      ],
+    };
+    case 'spi_controller': return {
+      moduleName: 'spi0',
+      baseAddress: '0x4005_0000',
+      registers: [
+        { name: 'CTRL',     offset: 0x00, width: 16, access: 'rw', description: 'Enable, CPOL, CPHA, IRQ enable', value: 0 },
+        { name: 'STATUS',   offset: 0x04, width: 16, access: 'ro', description: 'BUSY, RX_READY, TX_START flags', value: 0 },
+        { name: 'TX_DATA',  offset: 0x08, width: 16, access: 'wo', description: 'Write byte to transmit', value: 0 },
+        { name: 'RX_DATA',  offset: 0x0C, width: 16, access: 'ro', description: 'Last received byte', value: 0 },
+        { name: 'CLK_DIV',  offset: 0x10, width: 16, access: 'rw', description: 'SPI clock divider', value: 2 },
+        { name: 'IRQ_CLR',  offset: 0x14, width: 16, access: 'wo', description: 'Write to clear status flags', value: 0 },
+      ],
+    };
+    case 'pid_controller': return {
+      moduleName: 'pid0',
+      baseAddress: '0x4006_0000',
+      registers: [
+        { name: 'CTRL',     offset: 0x00, width: 16, access: 'rw', description: 'Enable, IRQ enable', value: 0 },
+        { name: 'KP',       offset: 0x04, width: 16, access: 'rw', description: 'Proportional gain (Q8.8)', value: 0x0180 },
+        { name: 'KI',       offset: 0x08, width: 16, access: 'rw', description: 'Integral gain (Q8.8)', value: 0x000A },
+        { name: 'KD',       offset: 0x0C, width: 16, access: 'rw', description: 'Derivative gain (Q8.8)', value: 0x0032 },
+        { name: 'SETPOINT', offset: 0x10, width: 16, access: 'rw', description: 'Target value', value: 128 },
+        { name: 'MEASURED', offset: 0x14, width: 16, access: 'ro', description: 'Last measured value', value: 0 },
+        { name: 'ERROR',    offset: 0x18, width: 16, access: 'ro', description: 'Current error', value: 0 },
+        { name: 'OUTPUT',   offset: 0x1C, width: 16, access: 'ro', description: 'Computed output (0–255)', value: 0 },
+        { name: 'I_ACCUM',  offset: 0x20, width: 16, access: 'ro', description: 'Integral accumulator', value: 0 },
+        { name: 'STATUS',   offset: 0x24, width: 16, access: 'ro', description: 'bit 0 = update complete', value: 0 },
+        { name: 'IRQ_CLR',  offset: 0x28, width: 16, access: 'wo', description: 'Clear status/IRQ', value: 0 },
+      ],
+    };
+    case 'adc': return {
+      moduleName: 'adc0',
+      baseAddress: '0x4007_0000',
+      registers: [
+        { name: 'CTRL',         offset: 0x00, width: 16, access: 'rw', description: 'Enable, start, continuous, watchdog, IRQ enables', value: 0 },
+        { name: 'STATUS',       offset: 0x04, width: 16, access: 'ro', description: 'BUSY, EOC, OVERRUN, WATCHDOG flags', value: 0 },
+        { name: 'DATA',         offset: 0x08, width: 16, access: 'ro', description: 'Conversion result', value: 0 },
+        { name: 'THRESHOLD_HI', offset: 0x0C, width: 16, access: 'rw', description: 'Upper watchdog threshold', value: 255 },
+        { name: 'THRESHOLD_LO', offset: 0x10, width: 16, access: 'rw', description: 'Lower watchdog threshold', value: 0 },
+        { name: 'SAMPLE_TIME',  offset: 0x14, width: 16, access: 'rw', description: 'Sample-and-hold duration (cycles)', value: 2 },
+        { name: 'IRQ_CLR',      offset: 0x18, width: 16, access: 'wo', description: 'Clear status/IRQ flags', value: 0 },
       ],
     };
   }
@@ -299,4 +401,7 @@ export const TOOLBOX_ITEMS: ToolboxItem[] = [
   { type: 'mmio_register',   label: 'MMIO Block',      group: 'System',     description: 'Memory-mapped register bridge: hardware ↔ firmware' },
   { type: 'interrupt_output',label: 'Interrupt',       group: 'System',     description: 'Interrupt request output line' },
   { type: 'timer_pwm_capture', label: 'Timer/PWM',   group: 'System',     description: 'Timer with PWM output and input capture' },
+  { type: 'spi_controller',   label: 'SPI Controller', group: 'System',  description: 'SPI master for IMU/sensor communication' },
+  { type: 'pid_controller',   label: 'PID Controller', group: 'System',  description: 'Hardware PID feedback loop for stabilization' },
+  { type: 'adc',              label: 'ADC',            group: 'System',  description: 'Analog-to-digital converter for battery monitoring' },
 ];

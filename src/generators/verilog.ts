@@ -8,7 +8,8 @@
 import type {
   Circuit, CircuitNode,
   InputPinProperties, OutputPinProperties, Counter8Properties,
-  MmioRegisterProperties, TimerPwmProperties, NodeType,
+  MmioRegisterProperties, TimerPwmProperties, SpiControllerProperties,
+  PidControllerProperties, AdcProperties, NodeType,
 } from '../simulator/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24,6 +25,9 @@ export function generateVerilog(circuit: Circuit, moduleName = 'circuit'): strin
   const seqs    = circuit.nodes.filter(n => isSequential(n.type));
   const mmios   = circuit.nodes.filter(n => n.type === 'mmio_register');
   const timers  = circuit.nodes.filter(n => n.type === 'timer_pwm_capture');
+  const spis    = circuit.nodes.filter(n => n.type === 'spi_controller');
+  const pids    = circuit.nodes.filter(n => n.type === 'pid_controller');
+  const adcs    = circuit.nodes.filter(n => n.type === 'adc');
 
   const wireMap = buildWireSourceMap(circuit);
 
@@ -206,6 +210,247 @@ export function generateVerilog(circuit: Circuit, moduleName = 'circuit'): strin
       lines.push(`            ${lbl}_cap_prev <= capture_in;`);
       lines.push(`            if (!${lbl}_cap_prev && capture_in)  // rising edge`);
       lines.push(`                ${lbl}_capture <= ${lbl}_counter;`);
+      lines.push(`        end`);
+      lines.push(`    end`);
+      lines.push(``);
+    }
+  }
+
+  // ── SPI Controller (if present) ──────────────────────────────────────────────
+  if (spis.length > 0) {
+    for (const n of spis) {
+      const props = n.properties as SpiControllerProperties;
+      const lbl = safeName(props.moduleName);
+      const clkInput = inputs.find(nd => (nd.properties as InputPinProperties).pinName.includes('clk'));
+      const clkName = clkInput ? safeName((clkInput.properties as InputPinProperties).pinName) : 'clk';
+      const rstInput = inputs.find(nd => (nd.properties as InputPinProperties).pinName.includes('rst'));
+      const rstName = rstInput ? safeName((rstInput.properties as InputPinProperties).pinName) : 'rst';
+
+      lines.push(`    // ── SPI Controller (Master) ──────────────────────────────────────`);
+      lines.push(`    // Module: ${props.moduleName}  Base: ${props.baseAddress}`);
+      lines.push(`    // Full-duplex serial interface: MOSI out, MISO in, synchronized to SCLK.`);
+      lines.push(`    //`);
+      for (const reg of props.registers) {
+        lines.push(`    //   +0x${reg.offset.toString(16).padStart(2, '0')} ${reg.name.padEnd(10)} [${reg.access}] – ${reg.description}`);
+      }
+      lines.push(``);
+      lines.push(`    // Configuration registers`);
+      lines.push(`    reg [15:0] ${lbl}_ctrl;`);
+      lines.push(`    reg [15:0] ${lbl}_clk_div;`);
+      lines.push(``);
+      lines.push(`    // Shift registers and state`);
+      lines.push(`    reg [7:0]  ${lbl}_tx_shift;`);
+      lines.push(`    reg [7:0]  ${lbl}_rx_shift;`);
+      lines.push(`    reg [7:0]  ${lbl}_rx_data;`);
+      lines.push(`    reg [3:0]  ${lbl}_bit_cnt;`);
+      lines.push(`    reg [15:0] ${lbl}_div_cnt;`);
+      lines.push(`    reg        ${lbl}_sclk_phase;`);
+      lines.push(`    reg        ${lbl}_busy;`);
+      lines.push(`    reg        ${lbl}_cs;`);
+      lines.push(`    reg [15:0] ${lbl}_status;`);
+      lines.push(``);
+      lines.push(`    // Output assignments`);
+      lines.push(`    assign sclk  = ${lbl}_busy ? ${lbl}_sclk_phase : 1'b0;`);
+      lines.push(`    assign mosi  = ${lbl}_tx_shift[7];  // MSB first`);
+      lines.push(`    assign cs_n  = ~${lbl}_cs;           // active low`);
+      lines.push(`    assign irq   = (${lbl}_ctrl[4]) & (${lbl}_status[1]); // IRQ on RX_READY`);
+      lines.push(``);
+      lines.push(`    always @(posedge ${clkName}) begin`);
+      lines.push(`        if (${rstName}) begin`);
+      lines.push(`            ${lbl}_tx_shift   <= 8'd0;`);
+      lines.push(`            ${lbl}_rx_shift   <= 8'd0;`);
+      lines.push(`            ${lbl}_rx_data    <= 8'd0;`);
+      lines.push(`            ${lbl}_bit_cnt    <= 4'd0;`);
+      lines.push(`            ${lbl}_div_cnt    <= 16'd0;`);
+      lines.push(`            ${lbl}_sclk_phase <= 1'b0;`);
+      lines.push(`            ${lbl}_busy       <= 1'b0;`);
+      lines.push(`            ${lbl}_cs         <= 1'b0;`);
+      lines.push(`            ${lbl}_status     <= 16'd0;`);
+      lines.push(`        end else if (${lbl}_busy) begin`);
+      lines.push(`            ${lbl}_div_cnt <= ${lbl}_div_cnt + 16'd1;`);
+      lines.push(`            if (${lbl}_div_cnt >= ${lbl}_clk_div) begin`);
+      lines.push(`                ${lbl}_div_cnt <= 16'd0;`);
+      lines.push(`                if (!${lbl}_sclk_phase) begin`);
+      lines.push(`                    // Rising SCLK: sample MISO`);
+      lines.push(`                    ${lbl}_rx_shift <= {${lbl}_rx_shift[6:0], miso};`);
+      lines.push(`                    ${lbl}_sclk_phase <= 1'b1;`);
+      lines.push(`                end else begin`);
+      lines.push(`                    // Falling SCLK: shift MOSI`);
+      lines.push(`                    ${lbl}_tx_shift <= {${lbl}_tx_shift[6:0], 1'b0};`);
+      lines.push(`                    ${lbl}_sclk_phase <= 1'b0;`);
+      lines.push(`                    ${lbl}_bit_cnt <= ${lbl}_bit_cnt + 4'd1;`);
+      lines.push(`                    if (${lbl}_bit_cnt == 4'd7) begin`);
+      lines.push(`                        ${lbl}_busy    <= 1'b0;`);
+      lines.push(`                        ${lbl}_cs      <= 1'b0;`);
+      lines.push(`                        ${lbl}_rx_data <= ${lbl}_rx_shift;`);
+      lines.push(`                        ${lbl}_status[0] <= 1'b0;  // clear BUSY`);
+      lines.push(`                        ${lbl}_status[1] <= 1'b1;  // set RX_READY`);
+      lines.push(`                    end`);
+      lines.push(`                end`);
+      lines.push(`            end`);
+      lines.push(`        end`);
+      lines.push(`    end`);
+      lines.push(``);
+    }
+  }
+
+  // ── PID Controller (if present) ────────────────────────────────────────────
+  if (pids.length > 0) {
+    for (const n of pids) {
+      const props = n.properties as PidControllerProperties;
+      const lbl = safeName(props.moduleName);
+      const clkInput = inputs.find(nd => (nd.properties as InputPinProperties).pinName.includes('clk'));
+      const clkName = clkInput ? safeName((clkInput.properties as InputPinProperties).pinName) : 'clk';
+      const rstInput = inputs.find(nd => (nd.properties as InputPinProperties).pinName.includes('rst'));
+      const rstName = rstInput ? safeName((rstInput.properties as InputPinProperties).pinName) : 'rst';
+
+      lines.push(`    // ── PID Controller ────────────────────────────────────────────────`);
+      lines.push(`    // Module: ${props.moduleName}  Base: ${props.baseAddress}`);
+      lines.push(`    // Fixed-point (Q8.8) multiply-accumulate for drone stabilization.`);
+      lines.push(`    //`);
+      for (const reg of props.registers) {
+        lines.push(`    //   +0x${reg.offset.toString(16).padStart(2, '0')} ${reg.name.padEnd(10)} [${reg.access}] – ${reg.description}`);
+      }
+      lines.push(``);
+      lines.push(`    // Gain registers (Q8.8 fixed-point: upper 8 = integer, lower 8 = fraction)`);
+      lines.push(`    reg [15:0] ${lbl}_kp;`);
+      lines.push(`    reg [15:0] ${lbl}_ki;`);
+      lines.push(`    reg [15:0] ${lbl}_kd;`);
+      lines.push(`    reg [15:0] ${lbl}_setpoint;`);
+      lines.push(``);
+      lines.push(`    // Internal state`);
+      lines.push(`    reg signed [15:0] ${lbl}_error;`);
+      lines.push(`    reg signed [15:0] ${lbl}_prev_error;`);
+      lines.push(`    reg signed [15:0] ${lbl}_integral;`);
+      lines.push(`    reg [7:0]         ${lbl}_output;`);
+      lines.push(`    reg               ${lbl}_done;`);
+      lines.push(``);
+      lines.push(`    // Intermediate wires`);
+      lines.push(`    wire signed [31:0] ${lbl}_p_term = ($signed(${lbl}_kp) * ${lbl}_error) >>> 8;`);
+      lines.push(`    wire signed [31:0] ${lbl}_i_term = ($signed(${lbl}_ki) * ${lbl}_integral) >>> 8;`);
+      lines.push(`    wire signed [31:0] ${lbl}_d_term = ($signed(${lbl}_kd) * (${lbl}_error - ${lbl}_prev_error)) >>> 8;`);
+      lines.push(`    wire signed [31:0] ${lbl}_sum    = ${lbl}_p_term + ${lbl}_i_term + ${lbl}_d_term;`);
+      lines.push(``);
+      lines.push(`    assign irq = ${lbl}_done;`);
+      lines.push(``);
+      lines.push(`    always @(posedge ${clkName}) begin`);
+      lines.push(`        if (${rstName}) begin`);
+      lines.push(`            ${lbl}_error      <= 16'sd0;`);
+      lines.push(`            ${lbl}_prev_error <= 16'sd0;`);
+      lines.push(`            ${lbl}_integral   <= 16'sd0;`);
+      lines.push(`            ${lbl}_output     <= 8'd0;`);
+      lines.push(`            ${lbl}_done       <= 1'b0;`);
+      lines.push(`        end else if (update) begin`);
+      lines.push(`            ${lbl}_error <= $signed({8'd0, setpoint}) - $signed({8'd0, measured});`);
+      lines.push(`            ${lbl}_prev_error <= ${lbl}_error;`);
+      lines.push(``);
+      lines.push(`            // Anti-windup: clamp integral to ±2048`);
+      lines.push(`            if (${lbl}_integral + ${lbl}_error > 16'sd2048)`);
+      lines.push(`                ${lbl}_integral <= 16'sd2048;`);
+      lines.push(`            else if (${lbl}_integral + ${lbl}_error < -16'sd2048)`);
+      lines.push(`                ${lbl}_integral <= -16'sd2048;`);
+      lines.push(`            else`);
+      lines.push(`                ${lbl}_integral <= ${lbl}_integral + ${lbl}_error;`);
+      lines.push(``);
+      lines.push(`            // Clamp output to 0–255`);
+      lines.push(`            if (${lbl}_sum > 32'sd255)`);
+      lines.push(`                ${lbl}_output <= 8'd255;`);
+      lines.push(`            else if (${lbl}_sum < 32'sd0)`);
+      lines.push(`                ${lbl}_output <= 8'd0;`);
+      lines.push(`            else`);
+      lines.push(`                ${lbl}_output <= ${lbl}_sum[7:0];`);
+      lines.push(`            ${lbl}_done <= 1'b1;`);
+      lines.push(`        end else begin`);
+      lines.push(`            ${lbl}_done <= 1'b0;`);
+      lines.push(`        end`);
+      lines.push(`    end`);
+      lines.push(``);
+    }
+  }
+
+  // ── ADC (if present) ──────────────────────────────────────────────────────
+  if (adcs.length > 0) {
+    for (const n of adcs) {
+      const props = n.properties as AdcProperties;
+      const lbl = safeName(props.moduleName);
+      const clkInput = inputs.find(nd => (nd.properties as InputPinProperties).pinName.includes('clk'));
+      const clkName = clkInput ? safeName((clkInput.properties as InputPinProperties).pinName) : 'clk';
+      const rstInput = inputs.find(nd => (nd.properties as InputPinProperties).pinName.includes('rst'));
+      const rstName = rstInput ? safeName((rstInput.properties as InputPinProperties).pinName) : 'rst';
+
+      lines.push(`    // ── ADC (Analog-to-Digital Converter) ─────────────────────────────`);
+      lines.push(`    // Module: ${props.moduleName}  Base: ${props.baseAddress}`);
+      lines.push(`    // State machine: IDLE → SAMPLING → CONVERTING → DONE`);
+      lines.push(`    //`);
+      for (const reg of props.registers) {
+        lines.push(`    //   +0x${reg.offset.toString(16).padStart(2, '0')} ${reg.name.padEnd(14)} [${reg.access}] – ${reg.description}`);
+      }
+      lines.push(``);
+      lines.push(`    // ADC state machine`);
+      lines.push(`    localparam ${lbl}_IDLE      = 2'd0;`);
+      lines.push(`    localparam ${lbl}_SAMPLING  = 2'd1;`);
+      lines.push(`    localparam ${lbl}_CONVERTING = 2'd2;`);
+      lines.push(`    localparam ${lbl}_DONE      = 2'd3;`);
+      lines.push(``);
+      lines.push(`    reg [1:0]  ${lbl}_state;`);
+      lines.push(`    reg [7:0]  ${lbl}_sample;`);
+      lines.push(`    reg [7:0]  ${lbl}_result;`);
+      lines.push(`    reg [15:0] ${lbl}_sample_cnt;`);
+      lines.push(`    reg [3:0]  ${lbl}_bit;`);
+      lines.push(`    reg [15:0] ${lbl}_status;`);
+      lines.push(`    reg [15:0] ${lbl}_ctrl;`);
+      lines.push(`    reg [15:0] ${lbl}_sample_time;`);
+      lines.push(`    reg [15:0] ${lbl}_thresh_hi;`);
+      lines.push(`    reg [15:0] ${lbl}_thresh_lo;`);
+      lines.push(``);
+      lines.push(`    assign eoc = ${lbl}_status[1];`);
+      lines.push(`    assign irq = (${lbl}_ctrl[4] & ${lbl}_status[1]) | (${lbl}_ctrl[5] & ${lbl}_status[3]);`);
+      lines.push(``);
+      lines.push(`    always @(posedge ${clkName}) begin`);
+      lines.push(`        if (${rstName}) begin`);
+      lines.push(`            ${lbl}_state      <= ${lbl}_IDLE;`);
+      lines.push(`            ${lbl}_sample     <= 8'd0;`);
+      lines.push(`            ${lbl}_result     <= 8'd0;`);
+      lines.push(`            ${lbl}_sample_cnt <= 16'd0;`);
+      lines.push(`            ${lbl}_bit        <= 4'd7;`);
+      lines.push(`            ${lbl}_status     <= 16'd0;`);
+      lines.push(`        end else begin`);
+      lines.push(`            case (${lbl}_state)`);
+      lines.push(`                ${lbl}_IDLE: begin`);
+      lines.push(`                    if (trigger || ${lbl}_ctrl[1]) begin`);
+      lines.push(`                        ${lbl}_state      <= ${lbl}_SAMPLING;`);
+      lines.push(`                        ${lbl}_sample_cnt <= 16'd0;`);
+      lines.push(`                        ${lbl}_status[0]  <= 1'b1;  // BUSY`);
+      lines.push(`                        ${lbl}_status[1]  <= 1'b0;  // clear EOC`);
+      lines.push(`                    end`);
+      lines.push(`                end`);
+      lines.push(`                ${lbl}_SAMPLING: begin`);
+      lines.push(`                    ${lbl}_sample     <= analog_in;  // latch input`);
+      lines.push(`                    ${lbl}_sample_cnt <= ${lbl}_sample_cnt + 16'd1;`);
+      lines.push(`                    if (${lbl}_sample_cnt >= ${lbl}_sample_time) begin`);
+      lines.push(`                        ${lbl}_state  <= ${lbl}_CONVERTING;`);
+      lines.push(`                        ${lbl}_bit    <= 4'd7;`);
+      lines.push(`                        ${lbl}_result <= 8'd0;`);
+      lines.push(`                    end`);
+      lines.push(`                end`);
+      lines.push(`                ${lbl}_CONVERTING: begin`);
+      lines.push(`                    ${lbl}_result[${lbl}_bit] <= ${lbl}_sample[${lbl}_bit];`);
+      lines.push(`                    if (${lbl}_bit == 4'd0)`);
+      lines.push(`                        ${lbl}_state <= ${lbl}_DONE;`);
+      lines.push(`                    else`);
+      lines.push(`                        ${lbl}_bit <= ${lbl}_bit - 4'd1;`);
+      lines.push(`                end`);
+      lines.push(`                ${lbl}_DONE: begin`);
+      lines.push(`                    ${lbl}_status[0] <= 1'b0;  // clear BUSY`);
+      lines.push(`                    ${lbl}_status[1] <= 1'b1;  // set EOC`);
+      lines.push(`                    // Watchdog check`);
+      lines.push(`                    if (${lbl}_ctrl[3]) begin`);
+      lines.push(`                        if (${lbl}_result > ${lbl}_thresh_hi || ${lbl}_result < ${lbl}_thresh_lo)`);
+      lines.push(`                            ${lbl}_status[3] <= 1'b1;  // WATCHDOG`);
+      lines.push(`                    end`);
+      lines.push(`                    ${lbl}_state <= ${lbl}_ctrl[2] ? ${lbl}_SAMPLING : ${lbl}_IDLE;`);
+      lines.push(`                end`);
+      lines.push(`            endcase`);
       lines.push(`        end`);
       lines.push(`    end`);
       lines.push(``);

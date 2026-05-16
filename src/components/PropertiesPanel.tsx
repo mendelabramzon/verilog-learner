@@ -1,6 +1,6 @@
 import { useCircuitStore } from '../store/circuitStore';
 import { ExplanationPanel } from './ExplanationPanel';
-import type { InputPinProperties, OutputPinProperties, MmioRegisterProperties, TimerPwmProperties } from '../simulator/types';
+import type { InputPinProperties, OutputPinProperties, MmioRegisterProperties, TimerPwmProperties, SpiControllerProperties, PidControllerProperties, AdcProperties } from '../simulator/types';
 import { EXAMPLES } from '../simulator/examples';
 
 export function PropertiesPanel() {
@@ -160,6 +160,133 @@ export function PropertiesPanel() {
               <div className="flex items-center gap-1.5 bg-amber-900/30 border border-amber-700/50 rounded px-2 py-1.5">
                 <span className="text-amber-400 text-sm">⚡</span>
                 <span className="text-xs text-amber-300">Timer interrupt asserted</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {node.type === 'spi_controller' && (
+          <div className="space-y-2">
+            <h4 className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">SPI Registers</h4>
+            <div className="space-y-1">
+              {(node.properties as SpiControllerProperties).registers.map((reg, i) => {
+                const val = (node.state.mmioValues ?? {})[reg.name] ?? reg.value;
+                return (
+                  <div key={i} className="flex justify-between items-center bg-slate-800 rounded px-2 py-1">
+                    <div>
+                      <span className="text-[10px] font-mono text-cyan-400">{reg.name}</span>
+                      <span className="text-[9px] text-slate-600 ml-1">[{reg.access}]</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-cyan-300">
+                      0x{val.toString(16).padStart(4, '0').toUpperCase()}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            {node.state.spiState && (
+              <div className="bg-slate-800 rounded p-2 font-mono text-xs space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">State</span>
+                  <span className="text-cyan-400">{node.state.spiState.busy ? 'BUSY' : 'IDLE'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Bit counter</span>
+                  <span className="text-cyan-400">{node.state.spiState.bitCounter}/8</span>
+                </div>
+              </div>
+            )}
+            {node.state.irqAsserted && (
+              <div className="flex items-center gap-1.5 bg-amber-900/30 border border-amber-700/50 rounded px-2 py-1.5">
+                <span className="text-amber-400 text-sm">⚡</span>
+                <span className="text-xs text-amber-300">SPI transfer complete interrupt</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {node.type === 'pid_controller' && (
+          <div className="space-y-2">
+            <h4 className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">PID Registers</h4>
+            <div className="space-y-1">
+              {(node.properties as PidControllerProperties).registers.map((reg, i) => {
+                const val = (node.state.mmioValues ?? {})[reg.name] ?? reg.value;
+                return (
+                  <div key={i} className="flex justify-between items-center bg-slate-800 rounded px-2 py-1">
+                    <div>
+                      <span className="text-[10px] font-mono text-violet-400">{reg.name}</span>
+                      <span className="text-[9px] text-slate-600 ml-1">[{reg.access}]</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-violet-300">
+                      0x{val.toString(16).padStart(4, '0').toUpperCase()}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            {node.state.pidState && (
+              <div className="bg-slate-800 rounded p-2 font-mono text-xs space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Error</span>
+                  <span className="text-violet-400">{node.state.pidState.error}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Output</span>
+                  <span className="text-violet-400">{node.state.pidState.output}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Integral</span>
+                  <span className="text-violet-400">{node.state.pidState.integral}</span>
+                </div>
+              </div>
+            )}
+            {node.state.irqAsserted && (
+              <div className="flex items-center gap-1.5 bg-amber-900/30 border border-amber-700/50 rounded px-2 py-1.5">
+                <span className="text-amber-400 text-sm">⚡</span>
+                <span className="text-xs text-amber-300">PID update complete interrupt</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {node.type === 'adc' && (
+          <div className="space-y-2">
+            <h4 className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">ADC Registers</h4>
+            <div className="space-y-1">
+              {(node.properties as AdcProperties).registers.map((reg, i) => {
+                const val = (node.state.mmioValues ?? {})[reg.name] ?? reg.value;
+                return (
+                  <div key={i} className="flex justify-between items-center bg-slate-800 rounded px-2 py-1">
+                    <div>
+                      <span className="text-[10px] font-mono text-emerald-400">{reg.name}</span>
+                      <span className="text-[9px] text-slate-600 ml-1">[{reg.access}]</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-emerald-300">
+                      0x{val.toString(16).padStart(4, '0').toUpperCase()}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            {node.state.adcState && (
+              <div className="bg-slate-800 rounded p-2 font-mono text-xs space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Phase</span>
+                  <span className="text-emerald-400">{node.state.adcState.phase.toUpperCase()}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Result</span>
+                  <span className="text-emerald-400">0x{node.state.adcState.convertedValue.toString(16).padStart(2, '0').toUpperCase()}</span>
+                </div>
+                {node.state.adcState.watchdogTripped && (
+                  <div className="text-red-400 font-bold">WATCHDOG TRIGGERED</div>
+                )}
+              </div>
+            )}
+            {node.state.irqAsserted && (
+              <div className="flex items-center gap-1.5 bg-amber-900/30 border border-amber-700/50 rounded px-2 py-1.5">
+                <span className="text-amber-400 text-sm">⚡</span>
+                <span className="text-xs text-amber-300">ADC interrupt</span>
               </div>
             )}
           </div>
