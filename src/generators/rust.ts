@@ -6,11 +6,14 @@
 //   - Optional firmbuf-rs integration snippet
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { Circuit, MmioRegisterProperties, TimerPwmProperties } from '../simulator/types';
+import type { Circuit, MmioRegisterProperties, TimerPwmProperties, SpiControllerProperties, PidControllerProperties, AdcProperties } from '../simulator/types';
 
 export function generateRust(circuit: Circuit): string {
   const mmios = circuit.nodes.filter(n => n.type === 'mmio_register');
   const timers = circuit.nodes.filter(n => n.type === 'timer_pwm_capture');
+  const spis = circuit.nodes.filter(n => n.type === 'spi_controller');
+  const pids = circuit.nodes.filter(n => n.type === 'pid_controller');
+  const adcs = circuit.nodes.filter(n => n.type === 'adc');
   const hasCounter = circuit.nodes.some(n => n.type === 'counter8');
   const hasIrq = circuit.nodes.some(n => n.type === 'interrupt_output');
   const hasFirmbuf = mmios.some(n => {
@@ -18,7 +21,7 @@ export function generateRust(circuit: Circuit): string {
     return p.moduleName.includes('firmbuf') || p.moduleName.includes('uart') || p.registers.some(r => r.name === 'DATA');
   });
 
-  if (mmios.length === 0 && timers.length === 0) {
+  if (mmios.length === 0 && timers.length === 0 && spis.length === 0 && pids.length === 0 && adcs.length === 0) {
     return generatePureLogicComment(circuit);
   }
 
@@ -45,6 +48,21 @@ export function generateRust(circuit: Circuit): string {
   for (const timerNode of timers) {
     const props = timerNode.properties as TimerPwmProperties;
     sections.push(...generateTimerDriver(props));
+  }
+
+  for (const spiNode of spis) {
+    const props = spiNode.properties as SpiControllerProperties;
+    sections.push(...generateSpiDriver(props));
+  }
+
+  for (const pidNode of pids) {
+    const props = pidNode.properties as PidControllerProperties;
+    sections.push(...generatePidDriver(props));
+  }
+
+  for (const adcNode of adcs) {
+    const props = adcNode.properties as AdcProperties;
+    sections.push(...generateAdcDriver(props));
   }
 
   if (hasFirmbuf) {
@@ -409,6 +427,339 @@ function generateTimerDriver(props: TimerPwmProperties): string[] {
   lines.push(`// // Hardware now outputs PWM independently – CPU is free.`);
   lines.push(`// // To change throttle: just update the compare value.`);
   lines.push(`// timer.set_duty_ch0(75);  // Increase to 75%`);
+  lines.push(``);
+
+  return lines;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPI Controller driver generation
+// ─────────────────────────────────────────────────────────────────────────────
+
+function generateSpiDriver(props: SpiControllerProperties): string[] {
+  const structName = toPascalCase(props.moduleName);
+  const regsStructName = `${structName}Regs`;
+  const lines: string[] = [];
+
+  lines.push(`// ── SPI Controller driver: ${props.moduleName} ──────────────────────────────`);
+  lines.push(`// Base address: ${props.baseAddress}`);
+  lines.push(`//`);
+  lines.push(`// SPI is a full-duplex serial protocol: data goes both directions`);
+  lines.push(`// simultaneously. The master (us) generates the clock (SCLK) and controls`);
+  lines.push(`// chip select (CS_N). Used for IMU sensors, flash memory, displays.`);
+  lines.push(``);
+  lines.push(`#[repr(C)]`);
+  lines.push(`pub struct ${regsStructName} {`);
+  for (const reg of props.registers) {
+    lines.push(`    /// ${reg.description}  [${reg.access}]  offset: +0x${reg.offset.toString(16).padStart(2, '0')}`);
+    lines.push(`    pub ${reg.name.toLowerCase()}: u16,`);
+  }
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`pub struct ${structName} {`);
+  lines.push(`    regs: *mut ${regsStructName},`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`impl ${structName} {`);
+  lines.push(`    pub const unsafe fn new(base: usize) -> Self {`);
+  lines.push(`        Self { regs: base as *mut ${regsStructName} }`);
+  lines.push(`    }`);
+  lines.push(``);
+
+  for (const reg of props.registers) {
+    const fieldName = reg.name.toLowerCase();
+    if (reg.access !== 'wo') {
+      lines.push(`    pub fn ${fieldName}(&self) -> u16 {`);
+      lines.push(`        unsafe { read_volatile(&(*self.regs).${fieldName}) }`);
+      lines.push(`    }`);
+      lines.push(``);
+    }
+    if (reg.access !== 'ro') {
+      lines.push(`    pub fn set_${fieldName}(&self, val: u16) {`);
+      lines.push(`        unsafe { write_volatile(&mut (*self.regs).${fieldName}, val) }`);
+      lines.push(`    }`);
+      lines.push(``);
+    }
+  }
+
+  lines.push(`    // ── High-level SPI API ─────────────────────────────────────────────`);
+  lines.push(``);
+  lines.push(`    /// Configure SPI: CPOL, CPHA, clock divider, enable`);
+  lines.push(`    pub fn configure(&self, cpol: bool, cpha: bool, div: u16) {`);
+  lines.push(`        self.set_clk_div(div);`);
+  lines.push(`        let ctrl = 0x01 // enable`);
+  lines.push(`            | if cpol { 0x02 } else { 0 }`);
+  lines.push(`            | if cpha { 0x04 } else { 0 }`);
+  lines.push(`            | 0x10; // IRQ enable`);
+  lines.push(`        self.set_ctrl(ctrl);`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Full-duplex SPI transfer: send tx_byte, receive one byte back`);
+  lines.push(`    pub fn transfer(&self, tx_byte: u8) -> u8 {`);
+  lines.push(`        self.set_tx_data(tx_byte as u16);`);
+  lines.push(`        while self.status() & 0x01 != 0 {} // wait for BUSY to clear`);
+  lines.push(`        self.rx_data() as u8`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Read a sensor register: send address (with R bit), get data back`);
+  lines.push(`    pub fn read_register(&self, addr: u8) -> u8 {`);
+  lines.push(`        self.transfer(addr | 0x80); // bit 7 = read`);
+  lines.push(`        self.transfer(0x00)          // clock out response`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Write a sensor register: send address then value`);
+  lines.push(`    pub fn write_register(&self, addr: u8, val: u8) {`);
+  lines.push(`        self.transfer(addr & 0x7F); // bit 7 = 0 for write`);
+  lines.push(`        self.transfer(val);`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Check if received data is available`);
+  lines.push(`    pub fn rx_ready(&self) -> bool {`);
+  lines.push(`        self.status() & 0x02 != 0`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Clear interrupt flags`);
+  lines.push(`    pub fn clear_irq(&self) {`);
+  lines.push(`        self.set_irq_clr(0xFF);`);
+  lines.push(`    }`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`// ── Example: Reading IMU accelerometer data ────────────────────────────`);
+  lines.push(`//`);
+  lines.push(`// let spi = unsafe { ${structName}::new(${props.baseAddress.replace(/_/g, '')}) };`);
+  lines.push(`// spi.configure(false, false, 4); // Mode 0, div=4`);
+  lines.push(`//`);
+  lines.push(`// // MPU6050: read ACCEL_XOUT_H register (0x3B)`);
+  lines.push(`// let accel_x_hi = spi.read_register(0x3B);`);
+  lines.push(`// let accel_x_lo = spi.read_register(0x3C);`);
+  lines.push(`// let accel_x = ((accel_x_hi as i16) << 8) | accel_x_lo as i16;`);
+  lines.push(``);
+
+  return lines;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PID Controller driver generation
+// ─────────────────────────────────────────────────────────────────────────────
+
+function generatePidDriver(props: PidControllerProperties): string[] {
+  const structName = toPascalCase(props.moduleName);
+  const regsStructName = `${structName}Regs`;
+  const lines: string[] = [];
+
+  lines.push(`// ── PID Controller driver: ${props.moduleName} ─────────────────────────────`);
+  lines.push(`// Base address: ${props.baseAddress}`);
+  lines.push(`//`);
+  lines.push(`// Hardware PID loop for drone attitude stabilization.`);
+  lines.push(`// Gains are Q8.8 fixed-point: upper 8 bits = integer, lower 8 = fraction.`);
+  lines.push(`// Example: 0x0180 = 1.5, 0x000A = 0.039`);
+  lines.push(``);
+  lines.push(`#[repr(C)]`);
+  lines.push(`pub struct ${regsStructName} {`);
+  for (const reg of props.registers) {
+    lines.push(`    /// ${reg.description}  [${reg.access}]  offset: +0x${reg.offset.toString(16).padStart(2, '0')}`);
+    lines.push(`    pub ${reg.name.toLowerCase()}: u16,`);
+  }
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`pub struct ${structName} {`);
+  lines.push(`    regs: *mut ${regsStructName},`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`impl ${structName} {`);
+  lines.push(`    pub const unsafe fn new(base: usize) -> Self {`);
+  lines.push(`        Self { regs: base as *mut ${regsStructName} }`);
+  lines.push(`    }`);
+  lines.push(``);
+
+  for (const reg of props.registers) {
+    const fieldName = reg.name.toLowerCase();
+    if (reg.access !== 'wo') {
+      lines.push(`    pub fn ${fieldName}(&self) -> u16 {`);
+      lines.push(`        unsafe { read_volatile(&(*self.regs).${fieldName}) }`);
+      lines.push(`    }`);
+      lines.push(``);
+    }
+    if (reg.access !== 'ro') {
+      lines.push(`    pub fn set_${fieldName}(&self, val: u16) {`);
+      lines.push(`        unsafe { write_volatile(&mut (*self.regs).${fieldName}, val) }`);
+      lines.push(`    }`);
+      lines.push(``);
+    }
+  }
+
+  lines.push(`    // ── High-level PID API ─────────────────────────────────────────────`);
+  lines.push(``);
+  lines.push(`    /// Construct a Q8.8 fixed-point value from integer and fractional parts`);
+  lines.push(`    pub fn q8_8(integer: u8, frac_256ths: u8) -> u16 {`);
+  lines.push(`        ((integer as u16) << 8) | frac_256ths as u16`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Configure PID gains (Q8.8 format)`);
+  lines.push(`    pub fn configure(&self, kp: u16, ki: u16, kd: u16) {`);
+  lines.push(`        self.set_kp(kp);`);
+  lines.push(`        self.set_ki(ki);`);
+  lines.push(`        self.set_kd(kd);`);
+  lines.push(`        self.set_ctrl(0x03); // enable + IRQ enable`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Set the target value`);
+  lines.push(`    pub fn set_target(&self, setpoint: u8) {`);
+  lines.push(`        self.set_setpoint(setpoint as u16);`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Read the computed motor output (0–255)`);
+  lines.push(`    pub fn read_output(&self) -> u8 {`);
+  lines.push(`        self.output() as u8`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Read current error (signed)`);
+  lines.push(`    pub fn read_error(&self) -> i16 {`);
+  lines.push(`        self.error() as i16`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Read integral accumulator (for tuning/debugging)`);
+  lines.push(`    pub fn read_integral(&self) -> i16 {`);
+  lines.push(`        self.i_accum() as i16`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Clear interrupt`);
+  lines.push(`    pub fn clear_irq(&self) {`);
+  lines.push(`        self.set_irq_clr(0xFF);`);
+  lines.push(`    }`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`// ── Example: Attitude control loop ─────────────────────────────────────`);
+  lines.push(`//`);
+  lines.push(`// let pid = unsafe { ${structName}::new(${props.baseAddress.replace(/_/g, '')}) };`);
+  lines.push(`//`);
+  lines.push(`// // Configure gains: Kp=1.5, Ki=0.04, Kd=0.2`);
+  lines.push(`// pid.configure(`);
+  lines.push(`//     ${structName}::q8_8(1, 128),  // Kp = 1.5`);
+  lines.push(`//     ${structName}::q8_8(0, 10),   // Ki = 0.039`);
+  lines.push(`//     ${structName}::q8_8(0, 50),   // Kd = 0.195`);
+  lines.push(`// );`);
+  lines.push(`// pid.set_target(128); // level flight`);
+  lines.push(`//`);
+  lines.push(`// // In the control loop interrupt handler:`);
+  lines.push(`// let motor_cmd = pid.read_output();`);
+  lines.push(`// timer.set_duty_ch0(motor_cmd as u8); // feed to PWM`);
+  lines.push(`// pid.clear_irq();`);
+  lines.push(``);
+
+  return lines;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADC driver generation
+// ─────────────────────────────────────────────────────────────────────────────
+
+function generateAdcDriver(props: AdcProperties): string[] {
+  const structName = toPascalCase(props.moduleName);
+  const regsStructName = `${structName}Regs`;
+  const lines: string[] = [];
+
+  lines.push(`// ── ADC driver: ${props.moduleName} ────────────────────────────────────────`);
+  lines.push(`// Base address: ${props.baseAddress}`);
+  lines.push(`//`);
+  lines.push(`// Converts analog voltages to digital values. Essential for battery`);
+  lines.push(`// monitoring – a LiPo below threshold voltage is permanently damaged.`);
+  lines.push(``);
+  lines.push(`#[repr(C)]`);
+  lines.push(`pub struct ${regsStructName} {`);
+  for (const reg of props.registers) {
+    lines.push(`    /// ${reg.description}  [${reg.access}]  offset: +0x${reg.offset.toString(16).padStart(2, '0')}`);
+    lines.push(`    pub ${reg.name.toLowerCase()}: u16,`);
+  }
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`pub struct ${structName} {`);
+  lines.push(`    regs: *mut ${regsStructName},`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`impl ${structName} {`);
+  lines.push(`    pub const unsafe fn new(base: usize) -> Self {`);
+  lines.push(`        Self { regs: base as *mut ${regsStructName} }`);
+  lines.push(`    }`);
+  lines.push(``);
+
+  for (const reg of props.registers) {
+    const fieldName = reg.name.toLowerCase();
+    if (reg.access !== 'wo') {
+      lines.push(`    pub fn ${fieldName}(&self) -> u16 {`);
+      lines.push(`        unsafe { read_volatile(&(*self.regs).${fieldName}) }`);
+      lines.push(`    }`);
+      lines.push(``);
+    }
+    if (reg.access !== 'ro') {
+      lines.push(`    pub fn set_${fieldName}(&self, val: u16) {`);
+      lines.push(`        unsafe { write_volatile(&mut (*self.regs).${fieldName}, val) }`);
+      lines.push(`    }`);
+      lines.push(``);
+    }
+  }
+
+  lines.push(`    // ── High-level ADC API ─────────────────────────────────────────────`);
+  lines.push(``);
+  lines.push(`    /// Start a single conversion`);
+  lines.push(`    pub fn start_conversion(&self) {`);
+  lines.push(`        let ctrl = self.ctrl() | 0x03; // enable + start`);
+  lines.push(`        self.set_ctrl(ctrl);`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Check if conversion is in progress`);
+  lines.push(`    pub fn is_busy(&self) -> bool {`);
+  lines.push(`        self.status() & 0x01 != 0`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Check if conversion is complete`);
+  lines.push(`    pub fn conversion_done(&self) -> bool {`);
+  lines.push(`        self.status() & 0x02 != 0`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Read conversion result (call after conversion_done)`);
+  lines.push(`    pub fn read_result(&self) -> u16 {`);
+  lines.push(`        self.data()`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Set watchdog thresholds for voltage monitoring`);
+  lines.push(`    pub fn set_watchdog(&self, lo: u16, hi: u16) {`);
+  lines.push(`        self.set_threshold_lo(lo);`);
+  lines.push(`        self.set_threshold_hi(hi);`);
+  lines.push(`        let ctrl = self.ctrl() | 0x28; // watchdog enable + watchdog IRQ`);
+  lines.push(`        self.set_ctrl(ctrl);`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Enable continuous conversion mode`);
+  lines.push(`    pub fn enable_continuous(&self) {`);
+  lines.push(`        let ctrl = self.ctrl() | 0x07; // enable + start + continuous`);
+  lines.push(`        self.set_ctrl(ctrl);`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Check if watchdog threshold was breached`);
+  lines.push(`    pub fn watchdog_triggered(&self) -> bool {`);
+  lines.push(`        self.status() & 0x08 != 0`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Clear interrupt flags`);
+  lines.push(`    pub fn clear_irq(&self) {`);
+  lines.push(`        self.set_irq_clr(0xFF);`);
+  lines.push(`    }`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`// ── Example: Battery voltage monitoring ────────────────────────────────`);
+  lines.push(`//`);
+  lines.push(`// let adc = unsafe { ${structName}::new(${props.baseAddress.replace(/_/g, '')}) };`);
+  lines.push(`//`);
+  lines.push(`// // Set low-battery threshold (3.3V through 1:4 divider = ~0x4D at 8-bit)`);
+  lines.push(`// adc.set_watchdog(0x4D, 0xFF);`);
+  lines.push(`// adc.enable_continuous();`);
+  lines.push(`//`);
+  lines.push(`// // In watchdog interrupt handler:`);
+  lines.push(`// if adc.watchdog_triggered() {`);
+  lines.push(`//     trigger_failsafe_landing();`);
+  lines.push(`// }`);
+  lines.push(`// adc.clear_irq();`);
   lines.push(``);
 
   return lines;

@@ -3,7 +3,7 @@
 // Each example is a factory that returns a pre-laid-out Circuit.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { Circuit, Wire, MmioRegisterProperties, TimerPwmProperties } from './types';
+import type { Circuit, Wire, MmioRegisterProperties, TimerPwmProperties, SpiControllerProperties, PidControllerProperties, AdcProperties } from './types';
 import { createNode, portId } from './types';
 
 export interface ExampleDef {
@@ -270,6 +270,229 @@ function makePwmMotorExample(): Circuit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Example 7: SPI IMU Sensor Read
+// ─────────────────────────────────────────────────────────────────────────────
+
+function makeSpiImuExample(): Circuit {
+  const clk     = createNode('e7_clk',   'input_pin',      { x: 80,  y: 100 }, 0, 'clk');
+  const rst     = createNode('e7_rst',   'input_pin',      { x: 80,  y: 200 }, 1, 'reset');
+  const miso    = createNode('e7_miso',  'input_pin',      { x: 80,  y: 300 }, 2, 'imu_miso');
+  const spi     = createNode('e7_spi',   'spi_controller', { x: 320, y: 160 }, 0, 'SPI0');
+  const sclkOut = createNode('e7_sclk',  'output_pin',     { x: 560, y: 100 }, 0, 'imu_sclk');
+  const mosiOut = createNode('e7_mosi',  'output_pin',     { x: 560, y: 180 }, 1, 'imu_mosi');
+  const csOut   = createNode('e7_cs',    'output_pin',     { x: 560, y: 260 }, 2, 'imu_cs_n');
+  const irqOut  = createNode('e7_irq',   'interrupt_output', { x: 560, y: 340 }, 0, 'SPI Done IRQ');
+
+  (clk.properties as { pinName: string; value: 0 | 1 }).pinName = 'clk';
+  (rst.properties as { pinName: string; value: 0 | 1 }).pinName = 'rst';
+  (miso.properties as { pinName: string; value: 0 | 1 }).pinName = 'imu_miso';
+  (sclkOut.properties as { pinName: string }).pinName = 'imu_sclk';
+  (mosiOut.properties as { pinName: string }).pinName = 'imu_mosi';
+  (csOut.properties as { pinName: string }).pinName = 'imu_cs_n';
+  clk.label = 'clk';
+  rst.label = 'rst';
+  miso.label = 'imu_miso';
+  sclkOut.label = 'imu_sclk';
+  mosiOut.label = 'imu_mosi';
+  csOut.label = 'imu_cs_n';
+
+  // Configure SPI: enabled with IRQ
+  const spiProps = spi.properties as SpiControllerProperties;
+  spiProps.moduleName = 'spi0';
+  spiProps.baseAddress = '0x4005_0000';
+  const spiCtrl = spiProps.registers.find(r => r.name === 'CTRL');
+  if (spiCtrl) spiCtrl.value = 0x11; // enable + IRQ enable
+
+  spi.state = {
+    mmioValues: {
+      CTRL: 0x11,
+      STATUS: 0,
+      TX_DATA: 0,
+      RX_DATA: 0,
+      CLK_DIV: 2,
+    },
+    spiState: {
+      shiftRegTx: 0, shiftRegRx: 0, bitCounter: 0,
+      sclkDivCounter: 0, sclkPhase: 0, busy: false, csAsserted: false,
+    },
+    irqAsserted: false,
+  };
+
+  return {
+    nodes: [clk, rst, miso, spi, sclkOut, mosiOut, csOut, irqOut],
+    wires: [
+      wire('e7_w1', 'e7_clk',  'out',      'e7_spi',  'clk'),
+      wire('e7_w2', 'e7_rst',  'out',      'e7_spi',  'rst'),
+      wire('e7_w3', 'e7_miso', 'out',      'e7_spi',  'miso'),
+      wire('e7_w4', 'e7_spi',  'sclk',     'e7_sclk', 'in'),
+      wire('e7_w5', 'e7_spi',  'mosi',     'e7_mosi', 'in'),
+      wire('e7_w6', 'e7_spi',  'cs_n',     'e7_cs',   'in'),
+      wire('e7_w7', 'e7_spi',  'irq',      'e7_irq',  'irq'),
+    ],
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Example 8: PID Attitude Control Loop
+// ─────────────────────────────────────────────────────────────────────────────
+
+function makePidControlExample(): Circuit {
+  const clk       = createNode('e8_clk',    'input_pin',         { x: 60,  y: 80  }, 0, 'clk');
+  const rst       = createNode('e8_rst',    'input_pin',         { x: 60,  y: 180 }, 1, 'reset');
+  const setpoint  = createNode('e8_sp',     'input_pin',         { x: 60,  y: 280 }, 2, 'target_angle');
+  const measured  = createNode('e8_meas',   'input_pin',         { x: 60,  y: 380 }, 3, 'imu_angle');
+  const tick      = createNode('e8_tick',   'input_pin',         { x: 60,  y: 480 }, 4, 'loop_tick');
+  const pid       = createNode('e8_pid',    'pid_controller',    { x: 300, y: 240 }, 0, 'PID Roll');
+  const timer     = createNode('e8_timer',  'timer_pwm_capture', { x: 560, y: 200 }, 0, 'Motor PWM');
+  const motorOut  = createNode('e8_motor',  'output_pin',        { x: 780, y: 160 }, 0, 'motor_esc');
+  const errorOut  = createNode('e8_err',    'output_pin',        { x: 780, y: 340 }, 1, 'error_dbg');
+  const irqOut    = createNode('e8_irq',    'interrupt_output',  { x: 780, y: 260 }, 0, 'PID IRQ');
+
+  (clk.properties as { pinName: string; value: 0 | 1 }).pinName = 'clk';
+  (rst.properties as { pinName: string; value: 0 | 1 }).pinName = 'rst';
+  (setpoint.properties as { pinName: string; value: 0 | 1 }).pinName = 'target_angle';
+  (measured.properties as { pinName: string; value: 0 | 1 }).pinName = 'imu_angle';
+  (tick.properties as { pinName: string; value: 0 | 1 }).pinName = 'loop_tick';
+  (motorOut.properties as { pinName: string }).pinName = 'motor_esc';
+  (errorOut.properties as { pinName: string }).pinName = 'error_dbg';
+  clk.label = 'clk';
+  rst.label = 'rst';
+  setpoint.label = 'target_angle';
+  measured.label = 'imu_angle';
+  tick.label = 'loop_tick';
+  motorOut.label = 'motor_esc';
+  errorOut.label = 'error_dbg';
+
+  // Configure PID gains
+  const pidProps = pid.properties as PidControllerProperties;
+  pidProps.moduleName = 'pid_roll';
+  pidProps.baseAddress = '0x4006_0000';
+  const pidCtrl = pidProps.registers.find(r => r.name === 'CTRL');
+  if (pidCtrl) pidCtrl.value = 0x03; // enable + IRQ
+
+  pid.state = {
+    mmioValues: {
+      CTRL: 0x03,
+      KP: 0x0180,    // 1.5
+      KI: 0x000A,    // 0.039
+      KD: 0x0032,    // 0.195
+      SETPOINT: 128,
+      MEASURED: 0,
+      ERROR: 0,
+      OUTPUT: 0,
+      I_ACCUM: 0,
+      STATUS: 0,
+    },
+    pidState: { prevError: 0, integral: 0, output: 0, error: 0, updateComplete: false },
+    irqAsserted: false,
+  };
+
+  // Configure timer for PWM output
+  const timerProps = timer.properties as TimerPwmProperties;
+  timerProps.moduleName = 'motor_pwm';
+  timerProps.baseAddress = '0x4004_0000';
+  const timerCtrl = timerProps.registers.find(r => r.name === 'CTRL');
+  if (timerCtrl) timerCtrl.value = 0b0001_0011;
+
+  timer.state = {
+    mmioValues: {
+      CTRL: 0b0001_0011,
+      PRESCALE: 0,
+      PERIOD: 255,
+      CMP0: 128,
+      CMP1: 64,
+      CAPTURE: 0,
+      COUNT: 0,
+      STATUS: 0,
+    },
+    timerState: { prescalerTick: 0, count: 0, prevCaptureIn: 0 },
+    irqAsserted: false,
+  };
+
+  return {
+    nodes: [clk, rst, setpoint, measured, tick, pid, timer, motorOut, errorOut, irqOut],
+    wires: [
+      wire('e8_w1',  'e8_clk',   'out',    'e8_pid',   'clk'),
+      wire('e8_w2',  'e8_rst',   'out',    'e8_pid',   'rst'),
+      wire('e8_w3',  'e8_sp',    'out',    'e8_pid',   'setpoint'),
+      wire('e8_w4',  'e8_meas',  'out',    'e8_pid',   'measured'),
+      wire('e8_w5',  'e8_tick',  'out',    'e8_pid',   'update'),
+      wire('e8_w6',  'e8_clk',   'out',    'e8_timer', 'clk'),
+      wire('e8_w7',  'e8_rst',   'out',    'e8_timer', 'rst'),
+      wire('e8_w8',  'e8_timer', 'pwm0',   'e8_motor', 'in'),
+      wire('e8_w9',  'e8_pid',   'irq',    'e8_irq',   'irq'),
+      wire('e8_w10', 'e8_pid',   'error',  'e8_err',   'in'),
+    ],
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Example 9: ADC Battery Monitor
+// ─────────────────────────────────────────────────────────────────────────────
+
+function makeAdcBatteryExample(): Circuit {
+  const clk      = createNode('e9_clk',    'input_pin',         { x: 80,  y: 100 }, 0, 'clk');
+  const rst      = createNode('e9_rst',    'input_pin',         { x: 80,  y: 200 }, 1, 'reset');
+  const vin      = createNode('e9_vin',    'input_pin',         { x: 80,  y: 300 }, 2, 'battery_voltage');
+  const trig     = createNode('e9_trig',   'input_pin',         { x: 80,  y: 400 }, 3, 'sample_trigger');
+  const adc      = createNode('e9_adc',    'adc',               { x: 320, y: 220 }, 0, 'ADC0');
+  const voltOut  = createNode('e9_volt',   'output_pin',        { x: 560, y: 160 }, 0, 'voltage_reading');
+  const eocOut   = createNode('e9_eoc',    'output_pin',        { x: 560, y: 260 }, 1, 'conv_done');
+  const irqOut   = createNode('e9_irq',    'interrupt_output',  { x: 560, y: 360 }, 0, 'ADC IRQ');
+
+  (clk.properties as { pinName: string; value: 0 | 1 }).pinName = 'clk';
+  (rst.properties as { pinName: string; value: 0 | 1 }).pinName = 'rst';
+  (vin.properties as { pinName: string; value: 0 | 1 }).pinName = 'battery_voltage';
+  (trig.properties as { pinName: string; value: 0 | 1 }).pinName = 'sample_trigger';
+  (voltOut.properties as { pinName: string }).pinName = 'voltage_reading';
+  (eocOut.properties as { pinName: string }).pinName = 'conv_done';
+  clk.label = 'clk';
+  rst.label = 'rst';
+  vin.label = 'battery_voltage';
+  trig.label = 'sample_trigger';
+  voltOut.label = 'voltage_reading';
+  eocOut.label = 'conv_done';
+
+  // Configure ADC with watchdog thresholds
+  const adcProps = adc.properties as AdcProperties;
+  adcProps.moduleName = 'adc0';
+  adcProps.baseAddress = '0x4007_0000';
+  const adcCtrl = adcProps.registers.find(r => r.name === 'CTRL');
+  if (adcCtrl) adcCtrl.value = 0x39; // enable + watchdog + eoc_irq + wdg_irq
+  const thLo = adcProps.registers.find(r => r.name === 'THRESHOLD_LO');
+  if (thLo) thLo.value = 0x4D; // ~3.0V equivalent
+
+  adc.state = {
+    mmioValues: {
+      CTRL: 0x39,
+      STATUS: 0,
+      DATA: 0,
+      THRESHOLD_HI: 255,
+      THRESHOLD_LO: 0x4D,
+      SAMPLE_TIME: 2,
+    },
+    adcState: {
+      sampleValue: 0, convertedValue: 0, sampleCounter: 0,
+      phase: 'idle', convertBit: 7, watchdogTripped: false,
+    },
+    irqAsserted: false,
+  };
+
+  return {
+    nodes: [clk, rst, vin, trig, adc, voltOut, eocOut, irqOut],
+    wires: [
+      wire('e9_w1', 'e9_clk',  'out',      'e9_adc',  'clk'),
+      wire('e9_w2', 'e9_rst',  'out',      'e9_adc',  'rst'),
+      wire('e9_w3', 'e9_vin',  'out',      'e9_adc',  'analog_in'),
+      wire('e9_w4', 'e9_trig', 'out',      'e9_adc',  'trigger'),
+      wire('e9_w5', 'e9_adc',  'data_out', 'e9_volt', 'in'),
+      wire('e9_w6', 'e9_adc',  'eoc',      'e9_eoc',  'in'),
+      wire('e9_w7', 'e9_adc',  'irq',      'e9_irq',  'irq'),
+    ],
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Registry
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -351,6 +574,52 @@ export const EXAMPLES: ExampleDef[] = [
       'Same pattern used for: servo control, LED dimming, audio tone generation.',
     ],
     circuit: makePwmMotorExample(),
+  },
+  {
+    id: 'spi_imu',
+    title: 'SPI IMU Sensor Read',
+    description: 'SPI controller reads accelerometer data from an IMU sensor. Watch the shift register clock out bits on MOSI and capture MISO.',
+    teachingPoints: [
+      'SPI is full-duplex: MOSI and MISO shift data simultaneously on every clock cycle.',
+      'CS_N (Chip Select, active low) tells the sensor "you are being addressed."',
+      'The master generates SCLK – the sensor samples/drives data on its edges.',
+      'CPOL/CPHA (clock polarity/phase) must match the sensor datasheet (Mode 0 or 3 for IMUs).',
+      'Register read: send address byte (bit 7 = read), receive data on next byte.',
+      'Every flight controller uses SPI to talk to its IMU (MPU6050, ICM-20948, BMI270).',
+      'The SPI clock divider sets the bus speed – sensors have maximum rated frequencies.',
+    ],
+    circuit: makeSpiImuExample(),
+  },
+  {
+    id: 'pid_control',
+    title: 'Attitude Control Loop',
+    description: 'PID controller reads IMU angle error and outputs a motor correction signal to the PWM peripheral. The core of drone stabilization.',
+    teachingPoints: [
+      'PID is a feedback loop: it measures error and computes a correction signal.',
+      'P term: immediate response proportional to error (too high → oscillation).',
+      'I term: eliminates steady-state error over time (too high → slow overshoot).',
+      'D term: dampens rate of change (too high → noise sensitivity).',
+      'Gains are Q8.8 fixed-point: 0x0180 = 1.5, avoiding floating-point hardware.',
+      'Anti-windup clamps the integral to prevent unbounded growth when output saturates.',
+      'Output (0–255) maps directly to PWM duty cycle for motor speed control.',
+      'Each axis (roll, pitch, yaw) has its own PID loop running at 500–8000 Hz.',
+    ],
+    circuit: makePidControlExample(),
+  },
+  {
+    id: 'adc_battery',
+    title: 'Battery Monitor',
+    description: 'ADC converts battery voltage to a digital value. Watchdog thresholds trigger a low-battery interrupt for failsafe landing.',
+    teachingPoints: [
+      'ADCs convert continuous analog voltages to discrete digital numbers.',
+      'Sample-and-hold: the ADC snapshots the input so it stays stable during conversion.',
+      '8-bit resolution = 256 levels. For a 5V reference, each step is about 19.5 mV.',
+      'Battery voltage divider: a 4S LiPo (16.8V max) uses a resistor divider to fit ADC range.',
+      'Watchdog thresholds let hardware detect dangerous voltage without firmware polling.',
+      'When voltage drops below THRESHOLD_LO, the watchdog interrupt fires immediately.',
+      'In a real flight controller, this triggers failsafe landing to protect the LiPo battery.',
+    ],
+    circuit: makeAdcBatteryExample(),
   },
 ];
 

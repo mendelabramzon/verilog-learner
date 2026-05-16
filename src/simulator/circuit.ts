@@ -21,6 +21,9 @@ import {
 } from './sequential';
 import { stepMmioOnClock, mmioHardwareOutputs } from './memoryMapped';
 import { stepTimerPwm, timerPwmOutputs } from './timerPwm';
+import { stepSpiController, spiControllerOutputs } from './spiController';
+import { stepPidController, pidControllerOutputs } from './pidController';
+import { stepAdc, adcOutputs } from './adc';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Signal map helpers
@@ -73,7 +76,7 @@ function resolve(map: WireMap, portId: string): string | undefined {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function topoSort(circuit: Circuit): string[] {
-  const SEQUENTIAL: Set<string> = new Set(['dff', 'register8', 'counter8', 'mmio_register', 'interrupt_output', 'input_pin', 'timer_pwm_capture']);
+  const SEQUENTIAL: Set<string> = new Set(['dff', 'register8', 'counter8', 'mmio_register', 'interrupt_output', 'input_pin', 'timer_pwm_capture', 'spi_controller', 'pid_controller', 'adc']);
 
   // Build dependency graph: nodeId → set of nodeIds it depends on
   const nodeMap = new Map(circuit.nodes.map(n => [n.id, n]));
@@ -267,6 +270,32 @@ export function evaluateCombinational(
         setOut('irq', irq);
         break;
       }
+
+      case 'spi_controller': {
+        const spiOut = spiControllerOutputs(node.state);
+        setOut('sclk', spiOut.sclk);
+        setOut('mosi', spiOut.mosi);
+        setOut('cs_n', spiOut.cs_n);
+        setOutBus('data_out', spiOut.dataOut);
+        setOut('irq', spiOut.irq);
+        break;
+      }
+
+      case 'pid_controller': {
+        const pidOut = pidControllerOutputs(node.state);
+        setOutBus('output', pidOut.output);
+        setOutBus('error', pidOut.error);
+        setOut('irq', pidOut.irq);
+        break;
+      }
+
+      case 'adc': {
+        const adcOut = adcOutputs(node.state);
+        setOutBus('data_out', adcOut.dataOut);
+        setOut('eoc', adcOut.eoc);
+        setOut('irq', adcOut.irq);
+        break;
+      }
     }
   }
 
@@ -338,6 +367,27 @@ export function stepClock(
         const captureIn = inp(`${node.id}:capture_in`);
         const rst = inp(`${node.id}:rst`);
         newState = stepTimerPwm(node.state, node.properties, captureIn, rst);
+        break;
+      }
+      case 'spi_controller': {
+        const spiMiso = inp(`${node.id}:miso`);
+        const spiRst = inp(`${node.id}:rst`);
+        newState = stepSpiController(node.state, node.properties, spiMiso, spiRst);
+        break;
+      }
+      case 'pid_controller': {
+        const pidSetpoint = inpBus(`${node.id}:setpoint`, 8);
+        const pidMeasured = inpBus(`${node.id}:measured`, 8);
+        const pidUpdate = inp(`${node.id}:update`);
+        const pidRst = inp(`${node.id}:rst`);
+        newState = stepPidController(node.state, node.properties, pidSetpoint, pidMeasured, pidUpdate, pidRst);
+        break;
+      }
+      case 'adc': {
+        const adcIn = inpBus(`${node.id}:analog_in`, 8);
+        const adcTrigger = inp(`${node.id}:trigger`);
+        const adcRst = inp(`${node.id}:rst`);
+        newState = stepAdc(node.state, node.properties, adcIn, adcTrigger, adcRst);
         break;
       }
     }

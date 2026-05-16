@@ -118,6 +118,30 @@ function NodeIcon({ type }: { type: NodeType }) {
           <text x="5" y="8" fontSize="4" fontFamily="monospace" fill="currentColor" stroke="none">PWM</text>
         </svg>
       );
+    case 'spi_controller':
+      return (
+        <svg viewBox="0 0 24 24" width={20} height={20} {...common}>
+          <rect x="2" y="4" width="20" height="16" rx="2" />
+          <text x="5" y="11" fontSize="5" fontFamily="monospace" fill="currentColor" stroke="none">SPI</text>
+          <polyline points="5,15 8,15 8,17 11,17 11,15 14,15 14,17 17,17 17,15 20,15" fill="none" stroke="currentColor" strokeWidth="1" />
+        </svg>
+      );
+    case 'pid_controller':
+      return (
+        <svg viewBox="0 0 24 24" width={20} height={20} {...common}>
+          <rect x="2" y="4" width="20" height="16" rx="2" />
+          <text x="5" y="11" fontSize="5" fontFamily="monospace" fill="currentColor" stroke="none">PID</text>
+          <path d="M5,17 Q8,13 12,15 Q16,17 19,13" fill="none" stroke="currentColor" strokeWidth="1" />
+        </svg>
+      );
+    case 'adc':
+      return (
+        <svg viewBox="0 0 24 24" width={20} height={20} {...common}>
+          <rect x="2" y="4" width="20" height="16" rx="2" />
+          <text x="5" y="11" fontSize="5" fontFamily="monospace" fill="currentColor" stroke="none">ADC</text>
+          <polyline points="5,17 9,13 13,17 17,13 19,17" fill="none" stroke="currentColor" strokeWidth="1" />
+        </svg>
+      );
   }
 }
 
