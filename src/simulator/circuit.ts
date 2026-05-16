@@ -9,7 +9,7 @@
 
 import type {
   Circuit, CircuitNode, SignalValue, SignalMap, PortSignal,
-  InputPinProperties, NodeState, Wire,
+  InputPinProperties, ComparatorProperties, NodeState, Wire,
 } from './types';
 import {
   evalNot, evalAnd, evalOr, evalXor, evalComparator, evalMux,
@@ -209,7 +209,10 @@ export function evaluateCombinational(
 
       case 'comparator': {
         const aBits = inpBus(`${nodeId}:a`, 8);
-        const bBits = inpBus(`${nodeId}:b`, 8);
+        const bSrc = resolve(wireMap, `${nodeId}:b`);
+        const bBits = bSrc
+          ? getBus(signals, bSrc, 8)
+          : numberToBits((node.properties as ComparatorProperties).compareValue ?? 0, 8);
         const { eq, lt, gt } = evalComparator(aBits, bBits);
         setOut('eq', eq);
         setOut('lt', lt);
