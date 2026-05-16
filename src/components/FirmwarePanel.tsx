@@ -7,7 +7,7 @@ export function FirmwarePanel() {
   const circuit   = useCircuitStore(s => s.circuit);
   const logRef    = useRef<HTMLDivElement>(null);
 
-  const hasMMIO = circuit.nodes.some(n => n.type === 'mmio_register');
+  const hasMMIO = circuit.nodes.some(n => n.type === 'mmio_register' || n.type === 'timer_pwm_capture');
 
   // Auto-scroll log
   useEffect(() => {

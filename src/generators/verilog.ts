@@ -8,7 +8,7 @@
 import type {
   Circuit, CircuitNode,
   InputPinProperties, OutputPinProperties, Counter8Properties,
-  MmioRegisterProperties, NodeType,
+  MmioRegisterProperties, TimerPwmProperties, NodeType,
 } from '../simulator/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -23,6 +23,7 @@ export function generateVerilog(circuit: Circuit, moduleName = 'circuit'): strin
   const gates   = circuit.nodes.filter(n => isGate(n.type));
   const seqs    = circuit.nodes.filter(n => isSequential(n.type));
   const mmios   = circuit.nodes.filter(n => n.type === 'mmio_register');
+  const timers  = circuit.nodes.filter(n => n.type === 'timer_pwm_capture');
 
   const wireMap = buildWireSourceMap(circuit);
 
@@ -136,6 +137,79 @@ export function generateVerilog(circuit: Circuit, moduleName = 'circuit'): strin
       }
     }
     lines.push(``);
+  }
+
+  // ── Timer/PWM/Capture (if present) ──────────────────────────────────────────
+  if (timers.length > 0) {
+    for (const n of timers) {
+      const props = n.properties as TimerPwmProperties;
+      const lbl = safeName(props.moduleName);
+      const clkInput = inputs.find(nd => (nd.properties as InputPinProperties).pinName.includes('clk'));
+      const clkName = clkInput ? safeName((clkInput.properties as InputPinProperties).pinName) : 'clk';
+      const rstInput = inputs.find(nd => (nd.properties as InputPinProperties).pinName.includes('rst'));
+      const rstName = rstInput ? safeName((rstInput.properties as InputPinProperties).pinName) : 'rst';
+
+      lines.push(`    // ── Timer/PWM with Input Capture ──────────────────────────────`);
+      lines.push(`    // Module: ${props.moduleName}  Base: ${props.baseAddress}`);
+      lines.push(`    // Prescaler divides clock, counter counts to PERIOD, then overflows.`);
+      lines.push(`    // PWM outputs go HIGH while counter < compare threshold.`);
+      lines.push(`    //`);
+      for (const reg of props.registers) {
+        lines.push(`    //   +0x${reg.offset.toString(16).padStart(2, '0')} ${reg.name.padEnd(10)} [${reg.access}] – ${reg.description}`);
+      }
+      lines.push(``);
+      lines.push(`    // Configuration registers (firmware-writable)`);
+      lines.push(`    reg [15:0] ${lbl}_ctrl;`);
+      lines.push(`    reg [15:0] ${lbl}_prescale;`);
+      lines.push(`    reg [15:0] ${lbl}_period;`);
+      lines.push(`    reg [15:0] ${lbl}_cmp0;`);
+      lines.push(`    reg [15:0] ${lbl}_cmp1;`);
+      lines.push(``);
+      lines.push(`    // Hardware state registers`);
+      lines.push(`    reg [15:0] ${lbl}_prescaler_cnt;`);
+      lines.push(`    reg [15:0] ${lbl}_counter;`);
+      lines.push(`    reg [15:0] ${lbl}_capture;`);
+      lines.push(`    reg [15:0] ${lbl}_status;`);
+      lines.push(`    reg        ${lbl}_cap_prev;`);
+      lines.push(``);
+      lines.push(`    // Prescaler tick: counter advances when prescaler overflows`);
+      lines.push(`    wire ${lbl}_tick = (${lbl}_prescaler_cnt >= ${lbl}_prescale);`);
+      lines.push(``);
+      lines.push(`    // PWM output: HIGH while counter < compare value`);
+      lines.push(`    assign pwm0 = (${lbl}_counter < ${lbl}_cmp0);`);
+      lines.push(`    assign pwm1 = (${lbl}_counter < ${lbl}_cmp1);`);
+      lines.push(``);
+      lines.push(`    // IRQ: any enabled status flag is set`);
+      lines.push(`    assign irq = |(${lbl}_status & ${lbl}_ctrl[7:4]);`);
+      lines.push(``);
+      lines.push(`    always @(posedge ${clkName}) begin`);
+      lines.push(`        if (${rstName}) begin`);
+      lines.push(`            ${lbl}_prescaler_cnt <= 16'd0;`);
+      lines.push(`            ${lbl}_counter      <= 16'd0;`);
+      lines.push(`            ${lbl}_capture      <= 16'd0;`);
+      lines.push(`            ${lbl}_status       <= 16'd0;`);
+      lines.push(`            ${lbl}_cap_prev     <= 1'b0;`);
+      lines.push(`        end else if (${lbl}_ctrl[0]) begin  // enabled`);
+      lines.push(`            // Prescaler`);
+      lines.push(`            if (${lbl}_tick) begin`);
+      lines.push(`                ${lbl}_prescaler_cnt <= 16'd0;`);
+      lines.push(`                // Main counter`);
+      lines.push(`                if (${lbl}_counter >= ${lbl}_period)`);
+      lines.push(`                    ${lbl}_counter <= 16'd0;  // overflow`);
+      lines.push(`                else`);
+      lines.push(`                    ${lbl}_counter <= ${lbl}_counter + 16'd1;`);
+      lines.push(`            end else begin`);
+      lines.push(`                ${lbl}_prescaler_cnt <= ${lbl}_prescaler_cnt + 16'd1;`);
+      lines.push(`            end`);
+      lines.push(``);
+      lines.push(`            // Input capture: edge detection`);
+      lines.push(`            ${lbl}_cap_prev <= capture_in;`);
+      lines.push(`            if (!${lbl}_cap_prev && capture_in)  // rising edge`);
+      lines.push(`                ${lbl}_capture <= ${lbl}_counter;`);
+      lines.push(`        end`);
+      lines.push(`    end`);
+      lines.push(``);
+    }
   }
 
   // ── endmodule ──────────────────────────────────────────────────────────────

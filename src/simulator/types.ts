@@ -3,7 +3,7 @@
 // All types are plain data – no React, no side effects.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// All 13 supported component types
+// All supported component types
 export type NodeType =
   | 'input_pin'
   | 'output_pin'
@@ -17,7 +17,8 @@ export type NodeType =
   | 'comparator'
   | 'mux2to1'
   | 'mmio_register'
-  | 'interrupt_output';
+  | 'interrupt_output'
+  | 'timer_pwm_capture';
 
 // Signal value: 0, 1, or unknown/uninitialized
 export type SignalValue = 0 | 1 | 'x';
@@ -79,6 +80,11 @@ export interface MmioRegDef {
   value: number;
 }
 export interface InterruptProperties { label?: string; }
+export interface TimerPwmProperties {
+  moduleName: string;
+  baseAddress: string;
+  registers: MmioRegDef[];
+}
 
 export type NodeProperties =
   | InputPinProperties
@@ -90,7 +96,8 @@ export type NodeProperties =
   | ComparatorProperties
   | Mux2to1Properties
   | MmioRegisterProperties
-  | InterruptProperties;
+  | InterruptProperties
+  | TimerPwmProperties;
 
 // Sequential state stored per node (mutable during simulation steps)
 export interface NodeState {
@@ -106,6 +113,12 @@ export interface NodeState {
   mmioValues?: Record<string, number>;
   /** Whether interrupt is currently asserted */
   irqAsserted?: boolean;
+  /** Timer/PWM internal state */
+  timerState?: {
+    prescalerTick: number;
+    count: number;
+    prevCaptureIn: SignalValue;
+  };
 }
 
 // A wire connecting one node's output port to another node's input port
@@ -173,6 +186,10 @@ export const NODE_PORT_TEMPLATES: Record<
     inputs:  [port('irq', 'irq')],
     outputs: [],
   },
+  timer_pwm_capture: {
+    inputs:  [port('clk', 'clk'), port('rst', 'rst'), port('capture_in', 'cap_in')],
+    outputs: [port('pwm0', 'pwm0'), port('pwm1', 'pwm1'), port('irq', 'irq')],
+  },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -203,6 +220,21 @@ export function defaultProperties(type: NodeType, index: number): NodeProperties
       ],
     };
     case 'interrupt_output': return { label: 'IRQ' };
+    case 'timer_pwm_capture': return {
+      moduleName: 'timer0',
+      baseAddress: '0x4004_0000',
+      registers: [
+        { name: 'CTRL',     offset: 0x00, width: 16, access: 'rw', description: 'Enable, mode, edge select, IRQ enables', value: 0 },
+        { name: 'PRESCALE', offset: 0x04, width: 16, access: 'rw', description: 'Clock divider (0 = no division)', value: 0 },
+        { name: 'PERIOD',   offset: 0x08, width: 16, access: 'rw', description: 'Counter TOP value', value: 255 },
+        { name: 'CMP0',     offset: 0x0C, width: 16, access: 'rw', description: 'Compare channel 0', value: 128 },
+        { name: 'CMP1',     offset: 0x10, width: 16, access: 'rw', description: 'Compare channel 1', value: 64 },
+        { name: 'CAPTURE',  offset: 0x14, width: 16, access: 'ro', description: 'Captured counter on input edge', value: 0 },
+        { name: 'COUNT',    offset: 0x18, width: 16, access: 'ro', description: 'Current counter value', value: 0 },
+        { name: 'STATUS',   offset: 0x1C, width: 16, access: 'ro', description: 'OVF|CMP0|CMP1|CAP flags', value: 0 },
+        { name: 'IRQ_CLR',  offset: 0x20, width: 16, access: 'wo', description: 'Write bitmask to clear flags', value: 0 },
+      ],
+    };
   }
 }
 
@@ -266,4 +298,5 @@ export const TOOLBOX_ITEMS: ToolboxItem[] = [
   { type: 'mux2to1',         label: 'Mux 2-to-1',      group: 'Gates',      description: 'Selects one of two inputs based on sel' },
   { type: 'mmio_register',   label: 'MMIO Block',      group: 'System',     description: 'Memory-mapped register bridge: hardware ↔ firmware' },
   { type: 'interrupt_output',label: 'Interrupt',       group: 'System',     description: 'Interrupt request output line' },
+  { type: 'timer_pwm_capture', label: 'Timer/PWM',   group: 'System',     description: 'Timer with PWM output and input capture' },
 ];

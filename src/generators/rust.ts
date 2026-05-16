@@ -6,10 +6,11 @@
 //   - Optional firmbuf-rs integration snippet
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { Circuit, MmioRegisterProperties } from '../simulator/types';
+import type { Circuit, MmioRegisterProperties, TimerPwmProperties } from '../simulator/types';
 
 export function generateRust(circuit: Circuit): string {
   const mmios = circuit.nodes.filter(n => n.type === 'mmio_register');
+  const timers = circuit.nodes.filter(n => n.type === 'timer_pwm_capture');
   const hasCounter = circuit.nodes.some(n => n.type === 'counter8');
   const hasIrq = circuit.nodes.some(n => n.type === 'interrupt_output');
   const hasFirmbuf = mmios.some(n => {
@@ -17,7 +18,7 @@ export function generateRust(circuit: Circuit): string {
     return p.moduleName.includes('firmbuf') || p.moduleName.includes('uart') || p.registers.some(r => r.name === 'DATA');
   });
 
-  if (mmios.length === 0) {
+  if (mmios.length === 0 && timers.length === 0) {
     return generatePureLogicComment(circuit);
   }
 
@@ -39,6 +40,11 @@ export function generateRust(circuit: Circuit): string {
   for (const mmioNode of mmios) {
     const props = mmioNode.properties as MmioRegisterProperties;
     sections.push(...generateMmioDriver(props, hasIrq));
+  }
+
+  for (const timerNode of timers) {
+    const props = timerNode.properties as TimerPwmProperties;
+    sections.push(...generateTimerDriver(props));
   }
 
   if (hasFirmbuf) {
@@ -281,6 +287,132 @@ function generatePureLogicComment(circuit: Circuit): string {
 // ─────────────────────────────────────────────────────────────────────────────
 // String helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Timer/PWM driver generation
+// ─────────────────────────────────────────────────────────────────────────────
+
+function generateTimerDriver(props: TimerPwmProperties): string[] {
+  const structName = toPascalCase(props.moduleName);
+  const regsStructName = `${structName}Regs`;
+  const lines: string[] = [];
+
+  lines.push(`// ── Timer/PWM/Capture driver: ${props.moduleName} ────────────────────────`);
+  lines.push(`// Base address: ${props.baseAddress}`);
+  lines.push(`//`);
+  lines.push(`// This peripheral generates PWM waveforms and captures external signal timing.`);
+  lines.push(`// Key insight: once configured, the hardware generates signals continuously`);
+  lines.push(`// without CPU involvement – the CPU is free to do other work.`);
+  lines.push(``);
+  lines.push(`#[repr(C)]`);
+  lines.push(`pub struct ${regsStructName} {`);
+  for (const reg of props.registers) {
+    lines.push(`    /// ${reg.description}  [${reg.access}]  offset: +0x${reg.offset.toString(16).padStart(2, '0')}`);
+    lines.push(`    pub ${reg.name.toLowerCase()}: u16,`);
+  }
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`pub struct ${structName} {`);
+  lines.push(`    regs: *mut ${regsStructName},`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`impl ${structName} {`);
+  lines.push(`    pub const unsafe fn new(base: usize) -> Self {`);
+  lines.push(`        Self { regs: base as *mut ${regsStructName} }`);
+  lines.push(`    }`);
+  lines.push(``);
+
+  // Volatile accessors for each register
+  for (const reg of props.registers) {
+    const fieldName = reg.name.toLowerCase();
+    if (reg.access !== 'wo') {
+      lines.push(`    pub fn ${fieldName}(&self) -> u16 {`);
+      lines.push(`        unsafe { read_volatile(&(*self.regs).${fieldName}) }`);
+      lines.push(`    }`);
+      lines.push(``);
+    }
+    if (reg.access !== 'ro') {
+      lines.push(`    pub fn set_${fieldName}(&self, val: u16) {`);
+      lines.push(`        unsafe { write_volatile(&mut (*self.regs).${fieldName}, val) }`);
+      lines.push(`    }`);
+      lines.push(``);
+    }
+  }
+
+  // High-level convenience methods
+  lines.push(`    // ── High-level PWM API ──────────────────────────────────────────`);
+  lines.push(``);
+  lines.push(`    /// Set PWM frequency. period = sys_clk / ((prescale+1) * freq_hz) - 1`);
+  lines.push(`    pub fn set_period_hz(&self, sys_clk: u32, freq_hz: u32) {`);
+  lines.push(`        let prescale = self.prescale() as u32;`);
+  lines.push(`        let period = sys_clk / ((prescale + 1) * freq_hz) - 1;`);
+  lines.push(`        self.set_period(period as u16);`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Set duty cycle (0–100%) for channel 0`);
+  lines.push(`    pub fn set_duty_ch0(&self, percent: u8) {`);
+  lines.push(`        let period = self.period() as u32;`);
+  lines.push(`        let cmp = (period * percent as u32) / 100;`);
+  lines.push(`        self.set_cmp0(cmp as u16);`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Set duty cycle (0–100%) for channel 1`);
+  lines.push(`    pub fn set_duty_ch1(&self, percent: u8) {`);
+  lines.push(`        let period = self.period() as u32;`);
+  lines.push(`        let cmp = (period * percent as u32) / 100;`);
+  lines.push(`        self.set_cmp1(cmp as u16);`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Enable the timer in PWM mode`);
+  lines.push(`    pub fn enable_pwm(&self) {`);
+  lines.push(`        // bit 0 = enable, bits [2:1] = 01 (PWM mode)`);
+  lines.push(`        self.set_ctrl(0b0000_0011);`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Enable with overflow interrupt`);
+  lines.push(`    pub fn enable_pwm_with_irq(&self) {`);
+  lines.push(`        // bit 0 = enable, bits [2:1] = 01 (PWM), bit 4 = overflow IRQ enable`);
+  lines.push(`        self.set_ctrl(0b0001_0011);`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Read captured counter value (valid after capture event)`);
+  lines.push(`    pub fn read_capture(&self) -> u16 {`);
+  lines.push(`        self.capture()`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Check if overflow occurred (STATUS bit 0)`);
+  lines.push(`    pub fn overflow(&self) -> bool {`);
+  lines.push(`        self.status() & 0x1 != 0`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Check if capture event occurred (STATUS bit 3)`);
+  lines.push(`    pub fn capture_event(&self) -> bool {`);
+  lines.push(`        self.status() & 0x8 != 0`);
+  lines.push(`    }`);
+  lines.push(``);
+  lines.push(`    /// Clear interrupt flags`);
+  lines.push(`    pub fn clear_irq(&self, mask: u16) {`);
+  lines.push(`        self.set_irq_clr(mask);`);
+  lines.push(`    }`);
+  lines.push(`}`);
+  lines.push(``);
+  lines.push(`// ── Example usage ───────────────────────────────────────────────────────`);
+  lines.push(`//`);
+  lines.push(`// let timer = unsafe { ${structName}::new(${props.baseAddress.replace(/_/g, '')}) };`);
+  lines.push(`//`);
+  lines.push(`// // Configure 400 Hz PWM for ESC control, 50% throttle`);
+  lines.push(`// timer.set_prescale(0);              // No prescaler`);
+  lines.push(`// timer.set_period_hz(50_000_000, 400); // 400 Hz at 50 MHz sys clock`);
+  lines.push(`// timer.set_duty_ch0(50);             // 50% duty cycle`);
+  lines.push(`// timer.enable_pwm();                 // Start generating waveform`);
+  lines.push(`//`);
+  lines.push(`// // Hardware now outputs PWM independently – CPU is free.`);
+  lines.push(`// // To change throttle: just update the compare value.`);
+  lines.push(`// timer.set_duty_ch0(75);  // Increase to 75%`);
+  lines.push(``);
+
+  return lines;
+}
 
 function toPascalCase(s: string): string {
   return s

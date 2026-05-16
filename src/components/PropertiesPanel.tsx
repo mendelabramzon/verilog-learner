@@ -1,6 +1,6 @@
 import { useCircuitStore } from '../store/circuitStore';
 import { ExplanationPanel } from './ExplanationPanel';
-import type { InputPinProperties, OutputPinProperties, MmioRegisterProperties } from '../simulator/types';
+import type { InputPinProperties, OutputPinProperties, MmioRegisterProperties, TimerPwmProperties } from '../simulator/types';
 import { EXAMPLES } from '../simulator/examples';
 
 export function PropertiesPanel() {
@@ -132,6 +132,34 @@ export function PropertiesPanel() {
               <div className="flex items-center gap-1.5 bg-amber-900/30 border border-amber-700/50 rounded px-2 py-1.5">
                 <span className="text-amber-400 text-sm">⚡</span>
                 <span className="text-xs text-amber-300">Interrupt asserted</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {node.type === 'timer_pwm_capture' && (
+          <div className="space-y-2">
+            <h4 className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Timer Registers</h4>
+            <div className="space-y-1">
+              {(node.properties as TimerPwmProperties).registers.map((reg, i) => {
+                const val = (node.state.mmioValues ?? {})[reg.name] ?? reg.value;
+                return (
+                  <div key={i} className="flex justify-between items-center bg-slate-800 rounded px-2 py-1">
+                    <div>
+                      <span className="text-[10px] font-mono text-cyan-400">{reg.name}</span>
+                      <span className="text-[9px] text-slate-600 ml-1">[{reg.access}]</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-cyan-300">
+                      0x{val.toString(16).padStart(4, '0').toUpperCase()}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            {node.state.irqAsserted && (
+              <div className="flex items-center gap-1.5 bg-amber-900/30 border border-amber-700/50 rounded px-2 py-1.5">
+                <span className="text-amber-400 text-sm">⚡</span>
+                <span className="text-xs text-amber-300">Timer interrupt asserted</span>
               </div>
             )}
           </div>

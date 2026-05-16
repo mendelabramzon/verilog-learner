@@ -20,6 +20,7 @@ import {
   dffOutputs, register8Outputs, counter8Outputs,
 } from './sequential';
 import { stepMmioOnClock, mmioHardwareOutputs } from './memoryMapped';
+import { stepTimerPwm, timerPwmOutputs } from './timerPwm';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Signal map helpers
@@ -72,7 +73,7 @@ function resolve(map: WireMap, portId: string): string | undefined {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function topoSort(circuit: Circuit): string[] {
-  const SEQUENTIAL: Set<string> = new Set(['dff', 'register8', 'counter8', 'mmio_register', 'interrupt_output', 'input_pin']);
+  const SEQUENTIAL: Set<string> = new Set(['dff', 'register8', 'counter8', 'mmio_register', 'interrupt_output', 'input_pin', 'timer_pwm_capture']);
 
   // Build dependency graph: nodeId → set of nodeIds it depends on
   const nodeMap = new Map(circuit.nodes.map(n => [n.id, n]));
@@ -258,6 +259,14 @@ export function evaluateCombinational(
       case 'interrupt_output':
         // terminal node – no outputs
         break;
+
+      case 'timer_pwm_capture': {
+        const { pwm0, pwm1, irq } = timerPwmOutputs(node.state);
+        setOut('pwm0', pwm0);
+        setOut('pwm1', pwm1);
+        setOut('irq', irq);
+        break;
+      }
     }
   }
 
@@ -323,6 +332,12 @@ export function stepClock(
         const rst = inp(`${node.id}:rst`);
         const wrEn = inp(`${node.id}:wr_en`);
         newState = stepMmioOnClock(node.state, node.properties, dataIn, rst, wrEn);
+        break;
+      }
+      case 'timer_pwm_capture': {
+        const captureIn = inp(`${node.id}:capture_in`);
+        const rst = inp(`${node.id}:rst`);
+        newState = stepTimerPwm(node.state, node.properties, captureIn, rst);
         break;
       }
     }

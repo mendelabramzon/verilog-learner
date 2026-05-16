@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type {
   CircuitNode, SignalMap, NodeType,
-  InputPinProperties, OutputPinProperties, MmioRegisterProperties,
+  InputPinProperties, OutputPinProperties, MmioRegisterProperties, TimerPwmProperties,
 } from '../simulator/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -22,6 +22,7 @@ export const NODE_DIMS: Record<NodeType, { w: number; h: number }> = {
   mux2to1:          { w: 80,  h: 70 },
   mmio_register:    { w: 140, h: 130 },
   interrupt_output: { w: 60,  h: 40 },
+  timer_pwm_capture: { w: 140, h: 100 },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -375,6 +376,52 @@ export function NodeView({
       break;
     }
 
+    case 'timer_pwm_capture': {
+      const tProps = node.properties as TimerPwmProperties;
+      const tVals = node.state.mmioValues ?? {};
+      const tIrq = node.state.irqAsserted;
+      const count = tVals['COUNT'] ?? 0;
+      const period = tVals['PERIOD'] ?? 255;
+      const cmp0 = tVals['CMP0'] ?? 128;
+      body = (
+        <g style={{ filter: flashFilter }}>
+          <rect x={2} y={2} width={w-4} height={h-4} rx={6} fill="#1a1f2e" stroke={tIrq ? '#f59e0b' : strokeColor} strokeWidth={tIrq ? 2 : strokeWidth} />
+          <rect x={2} y={2} width={w-4} height={20} rx={6} fill="#0a1628" />
+          <rect x={2} y={12} width={w-4} height={10} fill="#0a1628" />
+          <text x={w/2} y={16} textAnchor="middle" fontSize={8} fontWeight={700} fill="#22d3ee" className="select-none">
+            PWM · {tProps.moduleName}
+          </text>
+          {/* PWM waveform indicator */}
+          <polyline
+            points={`10,36 10,30 30,30 30,36 50,36 50,30 70,30 70,36 90,36 90,30 110,30 110,36`}
+            fill="none" stroke="#22d3ee" strokeWidth={1.5} opacity={0.6}
+          />
+          {/* Counter progress bar */}
+          <rect x={10} y={46} width={w-20} height={6} rx={2} fill="#1e293b" />
+          <rect x={10} y={46} width={Math.max(1, ((w-20) * count) / (period || 1))} height={6} rx={2} fill="#22d3ee" opacity={0.8} />
+          {/* Stats */}
+          <text x={10} y={64} fontSize={7} fill="#64748b" fontFamily="monospace" className="select-none">
+            CNT: {count}
+          </text>
+          <text x={w-10} y={64} textAnchor="end" fontSize={7} fill="#64748b" fontFamily="monospace" className="select-none">
+            TOP: {period}
+          </text>
+          <text x={10} y={76} fontSize={7} fill="#64748b" fontFamily="monospace" className="select-none">
+            CMP0: {cmp0}
+          </text>
+          <text x={w-10} y={76} textAnchor="end" fontSize={7} fill={count < cmp0 ? '#22d3ee' : '#475569'} fontFamily="monospace" className="select-none">
+            PWM0: {count < cmp0 ? 'H' : 'L'}
+          </text>
+          {tIrq && (
+            <text x={w/2} y={h-8} textAnchor="middle" fontSize={7} fill="#f59e0b" fontWeight={700} className="select-none">
+              IRQ
+            </text>
+          )}
+        </g>
+      );
+      break;
+    }
+
     case 'interrupt_output': {
       const irqSig = node.inputPorts[0] ? getPortSignal(signals, node.inputPorts[0].id) : 'x';
       const active = irqSig === 1;
@@ -415,7 +462,7 @@ export function NodeView({
       {body}
 
       {/* Node label (skip for types that draw their own) */}
-      {!['input_pin', 'output_pin', 'mmio_register', 'interrupt_output', 'counter8', 'register8', 'dff'].includes(node.type) && (
+      {!['input_pin', 'output_pin', 'mmio_register', 'interrupt_output', 'counter8', 'register8', 'dff', 'timer_pwm_capture'].includes(node.type) && (
         <text x={w/2} y={-6} textAnchor="middle" fontSize={8} fill="#64748b" className="select-none">
           {node.label}
         </text>

@@ -3,7 +3,7 @@
 // Each example is a factory that returns a pre-laid-out Circuit.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { Circuit, Wire, MmioRegisterProperties } from './types';
+import type { Circuit, Wire, MmioRegisterProperties, TimerPwmProperties } from './types';
 import { createNode, portId } from './types';
 
 export interface ExampleDef {
@@ -209,6 +209,67 @@ function makeFirmbufExample(): Circuit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Example 6: PWM Motor Control
+// ─────────────────────────────────────────────────────────────────────────────
+
+function makePwmMotorExample(): Circuit {
+  const clk    = createNode('e6_clk',    'input_pin',         { x: 80,  y: 100 }, 0, 'clk');
+  const rst    = createNode('e6_rst',    'input_pin',         { x: 80,  y: 200 }, 1, 'reset');
+  const capIn  = createNode('e6_cap',    'input_pin',         { x: 80,  y: 300 }, 2, 'hall_sensor');
+  const timer  = createNode('e6_timer',  'timer_pwm_capture', { x: 320, y: 180 }, 0, 'Timer0');
+  const pwm0   = createNode('e6_pwm0',   'output_pin',        { x: 560, y: 120 }, 0, 'motor_esc');
+  const pwm1   = createNode('e6_pwm1',   'output_pin',        { x: 560, y: 220 }, 1, 'led');
+  const irqOut = createNode('e6_irq',    'interrupt_output',   { x: 560, y: 320 }, 0, 'Timer IRQ');
+
+  (clk.properties as { pinName: string; value: 0 | 1 }).pinName = 'clk';
+  (rst.properties as { pinName: string; value: 0 | 1 }).pinName = 'rst';
+  (capIn.properties as { pinName: string; value: 0 | 1 }).pinName = 'hall_sensor';
+  (pwm0.properties as { pinName: string }).pinName = 'motor_esc';
+  (pwm1.properties as { pinName: string }).pinName = 'led';
+  clk.label = 'clk';
+  rst.label = 'rst';
+  capIn.label = 'hall_sensor';
+  pwm0.label = 'motor_esc';
+  pwm1.label = 'led';
+
+  // Configure timer: enabled in PWM mode with overflow IRQ
+  const timerProps = timer.properties as TimerPwmProperties;
+  timerProps.moduleName = 'timer0';
+  timerProps.baseAddress = '0x4004_0000';
+  // Set CTRL = enabled + PWM mode + overflow IRQ enable
+  const ctrlReg = timerProps.registers.find(r => r.name === 'CTRL');
+  if (ctrlReg) ctrlReg.value = 0b0001_0011; // enable + PWM mode + ovf_irq_en
+
+  // Initialize mmioValues in state for immediate operation
+  timer.state = {
+    mmioValues: {
+      CTRL: 0b0001_0011,
+      PRESCALE: 0,
+      PERIOD: 255,
+      CMP0: 128,
+      CMP1: 64,
+      CAPTURE: 0,
+      COUNT: 0,
+      STATUS: 0,
+    },
+    timerState: { prescalerTick: 0, count: 0, prevCaptureIn: 0 },
+    irqAsserted: false,
+  };
+
+  return {
+    nodes: [clk, rst, capIn, timer, pwm0, pwm1, irqOut],
+    wires: [
+      wire('e6_w1', 'e6_clk',   'out',   'e6_timer', 'clk'),
+      wire('e6_w2', 'e6_rst',   'out',   'e6_timer', 'rst'),
+      wire('e6_w3', 'e6_cap',   'out',   'e6_timer', 'capture_in'),
+      wire('e6_w4', 'e6_timer', 'pwm0',  'e6_pwm0',  'in'),
+      wire('e6_w5', 'e6_timer', 'pwm1',  'e6_pwm1',  'in'),
+      wire('e6_w6', 'e6_timer', 'irq',   'e6_irq',   'irq'),
+    ],
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Registry
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -275,6 +336,21 @@ export const EXAMPLES: ExampleDef[] = [
       'This pattern works for UART, SPI, I2C, USB – any streaming peripheral.',
     ],
     circuit: makeFirmbufExample(),
+  },
+  {
+    id: 'pwm_motor',
+    title: 'PWM Motor Control',
+    description: 'Timer/PWM peripheral generates motor ESC signals. Input capture measures feedback from a hall sensor.',
+    teachingPoints: [
+      'PWM (Pulse Width Modulation) controls motor speed by switching power rapidly.',
+      'Duty cycle = CMP / PERIOD. Higher duty = more average voltage = faster motor.',
+      'Prescaler divides the clock for lower PWM frequencies (ESC typically needs 400 Hz).',
+      'Input capture latches the counter on an external edge – measures RPM.',
+      'Overflow interrupt provides a periodic tick for the control loop.',
+      'Once configured, hardware generates the waveform without CPU involvement.',
+      'Same pattern used for: servo control, LED dimming, audio tone generation.',
+    ],
+    circuit: makePwmMotorExample(),
   },
 ];
 

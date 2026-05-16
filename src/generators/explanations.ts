@@ -228,6 +228,27 @@ fn PERIPH_IRQ() {
       'Interrupt-driven I/O is more efficient than polling for bursty data.',
     ],
   },
+
+  timer_pwm_capture: {
+    summary: 'Timer/PWM with Input Capture – generates precise periodic signals (motor/servo PWM) and measures external signal timing.',
+    kind: 'system',
+    kindLabel: 'System – Timer Peripheral',
+    verilogMapping: `Prescaler + counter in \`always @(posedge clk)\` block. PWM outputs are combinational: \`assign pwm0 = (counter < cmp0);\``,
+    firmwareInteraction: 'Firmware writes PERIOD and CMP registers to set frequency and duty cycle. Reads CAPTURE for input timing. Hardware runs autonomously after configuration.',
+    rustView: `\`timer.set_period(999);    // count 0..999
+timer.set_cmp0(500);      // 50% duty
+timer.enable_pwm();       // start outputting
+// Hardware generates PWM without further CPU involvement\``,
+    teachingPoints: [
+      'Prescaler divides the system clock – lower effective frequency means finer timing control.',
+      'PWM output is HIGH while counter < compare value. Larger CMP = wider pulse = higher duty cycle.',
+      'Input capture snapshots the counter on an external edge – used for frequency/period measurement.',
+      'Overflow interrupt fires when counter wraps – useful as a periodic control-loop tick.',
+      'Same timer hardware exists in every microcontroller (STM32 TIM, AVR Timer/Counter, nRF TIMER).',
+      'Firmware sets registers once, hardware generates the waveform continuously without CPU involvement.',
+      'For ESC motor control: typical 400 Hz PWM, duty cycle controls throttle percentage.',
+    ],
+  },
 };
 
 export function getExplanation(type: NodeType): ComponentExplanation {

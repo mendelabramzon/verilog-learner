@@ -110,6 +110,14 @@ function NodeIcon({ type }: { type: NodeType }) {
           <circle cx="12" cy="19" r="2" />
         </svg>
       );
+    case 'timer_pwm_capture':
+      return (
+        <svg viewBox="0 0 24 24" width={20} height={20} {...common}>
+          <rect x="2" y="4" width="20" height="16" rx="2" />
+          <polyline points="4,16 4,10 8,10 8,16 12,16 12,10 16,10 16,16 20,16 20,10" fill="none" stroke="currentColor" strokeWidth="1.5" />
+          <text x="5" y="8" fontSize="4" fontFamily="monospace" fill="currentColor" stroke="none">PWM</text>
+        </svg>
+      );
   }
 }
 
