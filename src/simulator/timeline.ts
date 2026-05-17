@@ -11,6 +11,8 @@ export interface TimelineRow {
   /** Human-readable label: "nodeName.portName" */
   label: string;
   width: number;
+  /** Signal group (typically node label) for grouping in waveform viewer */
+  group?: string;
   /** Signal value at each cycle (index 0 = cycle 0) */
   values: SignalValue[];
   /** For bus ports, the numeric value at each cycle (-1 = unknown) */
@@ -36,6 +38,7 @@ export function initTimelineRows(circuit: Circuit): TimelineRow[] {
         portId: port.id,
         label: `${node.label}.${port.name}`,
         width: port.width,
+        group: node.label,
         values: [],
         numericValues: port.width > 1 ? [] : undefined,
       });

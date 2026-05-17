@@ -17,7 +17,9 @@ export const NODE_DIMS: Record<NodeType, { w: number; h: number }> = {
   or:               { w: 80,  h: 52 },
   xor:              { w: 80,  h: 52 },
   dff:              { w: 90,  h: 70 },
+  register:         { w: 100, h: 80 },
   register8:        { w: 100, h: 80 },
+  counter:          { w: 100, h: 70 },
   counter8:         { w: 100, h: 70 },
   comparator:       { w: 100, h: 70 },
   mux2to1:          { w: 80,  h: 70 },
@@ -286,30 +288,37 @@ export function NodeView({
       break;
     }
 
+    case 'register':
     case 'register8': {
+      const regWidth = (node.properties as { width?: number }).width ?? 8;
       const val = node.state.regValue ?? undefined;
-      const hexStr = val !== undefined ? `0x${val.toString(16).padStart(2, '0').toUpperCase()}` : '0x??';
-      const binStr = val !== undefined ? val.toString(2).padStart(8, '0') : '????????';
+      const hexChars = Math.ceil(regWidth / 4);
+      const hexStr = val !== undefined ? `0x${val.toString(16).padStart(hexChars, '0').toUpperCase()}` : '0x' + '?'.repeat(hexChars);
+      const binStr = val !== undefined ? val.toString(2).padStart(regWidth, '0') : '?'.repeat(regWidth);
+      const displayBin = binStr.length > 16 ? binStr.slice(0, 16) + '…' : binStr;
       body = (
         <g style={{ filter: flashFilter }}>
           <rect x={4} y={4} width={w-8} height={h-8} rx={4} fill="#1e2d3d" stroke={strokeColor} strokeWidth={strokeWidth} />
-          <text x={w/2} y={18} textAnchor="middle" fontSize={8} fill="#64748b" fontWeight={600} className="select-none">8-bit Register</text>
+          <text x={w/2} y={18} textAnchor="middle" fontSize={8} fill="#64748b" fontWeight={600} className="select-none">{regWidth}-bit Register</text>
           <text x={w/2} y={h/2+2} textAnchor="middle" fontSize={11} fontWeight={700} fill="#22d3ee" fontFamily="monospace" className="select-none">{hexStr}</text>
-          <text x={w/2} y={h/2+16} textAnchor="middle" fontSize={8} fill="#475569" fontFamily="monospace" className="select-none">{binStr}</text>
+          <text x={w/2} y={h/2+16} textAnchor="middle" fontSize={8} fill="#475569" fontFamily="monospace" className="select-none">{displayBin}</text>
           <polygon points={`4,${h-16} 12,${h-12} 4,${h-8}`} fill={strokeColor} />
         </g>
       );
       break;
     }
 
+    case 'counter':
     case 'counter8': {
+      const ctrWidth = (node.properties as { width?: number }).width ?? 8;
       const count = node.state.count ?? 0;
-      const hexStr = `0x${count.toString(16).padStart(2, '0').toUpperCase()}`;
+      const hexChars = Math.ceil(ctrWidth / 4);
+      const hexStr = `0x${count.toString(16).padStart(hexChars, '0').toUpperCase()}`;
       const decStr = count.toString().padStart(3, '0');
       body = (
         <g style={{ filter: flashFilter }}>
           <rect x={4} y={4} width={w-8} height={h-8} rx={4} fill="#1e2d3d" stroke={strokeColor} strokeWidth={strokeWidth} />
-          <text x={w/2} y={18} textAnchor="middle" fontSize={8} fill="#64748b" fontWeight={600} className="select-none">Counter</text>
+          <text x={w/2} y={18} textAnchor="middle" fontSize={8} fill="#64748b" fontWeight={600} className="select-none">{ctrWidth}-bit Counter</text>
           <text x={w/2} y={h/2+2} textAnchor="middle" fontSize={16} fontWeight={700} fill="#a78bfa" fontFamily="monospace" className="select-none">{decStr}</text>
           <text x={w/2} y={h/2+16} textAnchor="middle" fontSize={9} fill="#6d28d9" fontFamily="monospace" className="select-none">{hexStr}</text>
           <polygon points={`4,${h-16} 12,${h-12} 4,${h-8}`} fill={strokeColor} />
@@ -622,7 +631,7 @@ export function NodeView({
       {body}
 
       {/* Node label (skip for types that draw their own) */}
-      {!['input_pin', 'output_pin', 'mmio_register', 'interrupt_output', 'counter8', 'register8', 'dff', 'timer_pwm_capture', 'spi_controller', 'pid_controller', 'adc'].includes(node.type) && (
+      {!['input_pin', 'output_pin', 'mmio_register', 'interrupt_output', 'counter', 'counter8', 'register', 'register8', 'dff', 'timer_pwm_capture', 'spi_controller', 'pid_controller', 'adc'].includes(node.type) && (
         <text x={w/2} y={-6} textAnchor="middle" fontSize={8} fill="#64748b" className="select-none">
           {node.label}
         </text>

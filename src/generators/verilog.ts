@@ -7,10 +7,11 @@
 
 import type {
   Circuit, CircuitNode,
-  InputPinProperties, OutputPinProperties, Counter8Properties,
+  InputPinProperties, OutputPinProperties, CounterProperties,
   MmioRegisterProperties, TimerPwmProperties, SpiControllerProperties,
   PidControllerProperties, AdcProperties, NodeType,
 } from '../simulator/types';
+import { getNodeWidth } from '../simulator/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main entry point
@@ -65,10 +66,12 @@ export function generateVerilog(circuit: Circuit, moduleName = 'circuit'): strin
       }
     }
     for (const n of seqs) {
-      if (n.type === 'counter8') {
-        lines.push(`    reg [7:0] ${safeName(n.label)}_count;`);
-      } else if (n.type === 'register8') {
-        lines.push(`    reg [7:0] ${safeName(n.label)}_q;`);
+      if (n.type === 'counter' || n.type === 'counter8') {
+        const w = getNodeWidth(n.properties);
+        lines.push(`    reg [${w - 1}:0] ${safeName(n.label)}_count;`);
+      } else if (n.type === 'register' || n.type === 'register8') {
+        const w = getNodeWidth(n.properties);
+        lines.push(`    reg [${w - 1}:0] ${safeName(n.label)}_q;`);
       } else if (n.type === 'dff') {
         lines.push(`    reg ${safeName(n.label)}_q;`);
       }
@@ -472,7 +475,7 @@ function isGate(type: NodeType): boolean {
 }
 
 function isSequential(type: NodeType): boolean {
-  return ['dff', 'register8', 'counter8'].includes(type);
+  return ['dff', 'register', 'register8', 'counter', 'counter8'].includes(type);
 }
 
 function safeName(s: string): string {
@@ -520,8 +523,8 @@ function resolveSignalName(fromPortId: string, circuit: Circuit): string {
 }
 
 function sequentialOutputSignalName(node: CircuitNode): string {
-  if (node.type === 'counter8') return `${safeName(node.label)}_count`;
-  if (node.type === 'register8') return `${safeName(node.label)}_q`;
+  if (node.type === 'counter' || node.type === 'counter8') return `${safeName(node.label)}_count`;
+  if (node.type === 'register' || node.type === 'register8') return `${safeName(node.label)}_q`;
   if (node.type === 'dff') return `${safeName(node.label)}_q`;
   return safeName(node.label);
 }
@@ -610,36 +613,42 @@ function generateSequentialBlock(
       lines.push(`    end`);
       break;
     }
+    case 'register':
     case 'register8': {
+      const w   = getNodeWidth(node.properties);
       const rst = inp('rst');
       const en  = inp('en');
       const d   = inp('d');
-      lines.push(`    // 8-bit Register: loads when enable is high`);
+      lines.push(`    // ${w}-bit Register: loads when enable is high`);
       lines.push(`    always @(posedge ${clkName}) begin`);
       lines.push(`        if (${rst}) begin`);
-      lines.push(`            ${lbl}_q <= 8'd0;`);
+      lines.push(`            ${lbl}_q <= ${w}'d0;`);
       lines.push(`        end else if (${en}) begin`);
       lines.push(`            ${lbl}_q <= ${d};`);
       lines.push(`        end`);
       lines.push(`    end`);
       break;
     }
+    case 'counter':
     case 'counter8': {
+      const w   = getNodeWidth(node.properties);
       const rst = inp('rst');
       const en  = inp('en');
-      const max = (node.properties as Counter8Properties).maxCount ?? 255;
-      lines.push(`    // 8-bit Counter: increments on each clock edge when enabled`);
+      const props = node.properties as CounterProperties;
+      const maxVal = props.maxCount ?? ((1 << w) - 1) >>> 0;
+      const fullRange = maxVal >= ((1 << w) - 1) >>> 0;
+      lines.push(`    // ${w}-bit Counter: increments on each clock edge when enabled`);
       lines.push(`    always @(posedge ${clkName}) begin`);
       lines.push(`        if (${rst}) begin`);
-      lines.push(`            ${lbl}_count <= 8'd0;`);
+      lines.push(`            ${lbl}_count <= ${w}'d0;`);
       lines.push(`        end else if (${en}) begin`);
-      if (max < 255) {
-        lines.push(`            if (${lbl}_count == 8'd${max})`);
-        lines.push(`                ${lbl}_count <= 8'd0;`);
+      if (!fullRange) {
+        lines.push(`            if (${lbl}_count == ${w}'d${maxVal})`);
+        lines.push(`                ${lbl}_count <= ${w}'d0;`);
         lines.push(`            else`);
-        lines.push(`                ${lbl}_count <= ${lbl}_count + 8'd1;`);
+        lines.push(`                ${lbl}_count <= ${lbl}_count + ${w}'d1;`);
       } else {
-        lines.push(`            ${lbl}_count <= ${lbl}_count + 8'd1;`);
+        lines.push(`            ${lbl}_count <= ${lbl}_count + ${w}'d1;`);
       }
       lines.push(`        end`);
       lines.push(`    end`);

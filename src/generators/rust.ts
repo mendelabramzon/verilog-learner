@@ -14,7 +14,7 @@ export function generateRust(circuit: Circuit): string {
   const spis = circuit.nodes.filter(n => n.type === 'spi_controller');
   const pids = circuit.nodes.filter(n => n.type === 'pid_controller');
   const adcs = circuit.nodes.filter(n => n.type === 'adc');
-  const hasCounter = circuit.nodes.some(n => n.type === 'counter8');
+  const hasCounter = circuit.nodes.some(n => n.type === 'counter' || n.type === 'counter8');
   const hasIrq = circuit.nodes.some(n => n.type === 'interrupt_output');
   const hasFirmbuf = mmios.some(n => {
     const p = n.properties as MmioRegisterProperties;

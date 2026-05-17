@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { SignalValue, NodeState } from './types';
+import { widthMask } from './types';
 import { bitsToNumber, numberToBits } from './gates';
 
 // D flip-flop: captures D on rising edge, respects synchronous reset
@@ -18,12 +19,13 @@ export function stepDff(
   return { ...state, q: d, clockedThisCycle: true };
 }
 
-// 8-bit register: loads bus value on rising edge when enable is high
-export function stepRegister8(
+// N-bit register: loads bus value on rising edge when enable is high
+export function stepRegister(
   state: NodeState,
   dBits: SignalValue[],
   rst: SignalValue,
   en: SignalValue,
+  _width: number,
 ): NodeState {
   if (rst === 1) return { ...state, regValue: 0, clockedThisCycle: true };
   if (en !== 1) return { ...state, clockedThisCycle: false };
@@ -32,16 +34,29 @@ export function stepRegister8(
   return { ...state, regValue: val, clockedThisCycle: true };
 }
 
-// 8-bit counter: increments on rising edge when enable is high, wraps at 255
-export function stepCounter8(
+// N-bit counter: increments on rising edge when enable is high
+export function stepCounter(
   state: NodeState,
   rst: SignalValue,
   en: SignalValue,
+  width: number,
+  maxCount?: number,
 ): NodeState {
   if (rst === 1) return { ...state, count: 0, clockedThisCycle: true };
   if (en !== 1) return { ...state, clockedThisCycle: false };
   const current = state.count ?? 0;
-  return { ...state, count: (current + 1) & 0xFF, clockedThisCycle: true };
+  const max = maxCount ?? widthMask(width);
+  const next = current >= max ? 0 : (current + 1) & widthMask(width);
+  return { ...state, count: next, clockedThisCycle: true };
+}
+
+// Backward-compat wrappers
+export function stepRegister8(state: NodeState, dBits: SignalValue[], rst: SignalValue, en: SignalValue): NodeState {
+  return stepRegister(state, dBits, rst, en, 8);
+}
+
+export function stepCounter8(state: NodeState, rst: SignalValue, en: SignalValue): NodeState {
+  return stepCounter(state, rst, en, 8);
 }
 
 // Derive output signals from sequential state
@@ -51,12 +66,21 @@ export function dffOutputs(state: NodeState): { q: SignalValue; qn: SignalValue 
   return { q, qn };
 }
 
+export function registerOutputs(state: NodeState, width: number): SignalValue[] {
+  if (state.regValue === undefined) return Array(width).fill('x') as SignalValue[];
+  return numberToBits(state.regValue, width);
+}
+
+export function counterOutputs(state: NodeState, width: number): SignalValue[] {
+  if (state.count === undefined) return Array(width).fill('x') as SignalValue[];
+  return numberToBits(state.count, width);
+}
+
+// Backward-compat wrappers
 export function register8Outputs(state: NodeState): SignalValue[] {
-  if (state.regValue === undefined) return Array(8).fill('x') as SignalValue[];
-  return numberToBits(state.regValue, 8);
+  return registerOutputs(state, 8);
 }
 
 export function counter8Outputs(state: NodeState): SignalValue[] {
-  if (state.count === undefined) return Array(8).fill('x') as SignalValue[];
-  return numberToBits(state.count, 8);
+  return counterOutputs(state, 8);
 }

@@ -12,7 +12,9 @@ export type NodeType =
   | 'or'
   | 'xor'
   | 'dff'
+  | 'register'
   | 'register8'
+  | 'counter'
   | 'counter8'
   | 'comparator'
   | 'mux2to1'
@@ -22,6 +24,8 @@ export type NodeType =
   | 'spi_controller'
   | 'pid_controller'
   | 'adc';
+
+export type BusWidth = 8 | 16 | 32;
 
 // Signal value: 0, 1, or unknown/uninitialized
 export type SignalValue = 0 | 1 | 'x';
@@ -64,9 +68,11 @@ export interface InputPinProperties { pinName: string; value: 0 | 1; }
 export interface OutputPinProperties { pinName: string; }
 export interface GateProperties { label?: string; }
 export interface DffProperties { label?: string; }
-export interface Register8Properties { label?: string; }
-export interface Counter8Properties { label?: string; maxCount?: number; }
-export interface ComparatorProperties { compareValue?: number; }
+export interface RegisterProperties { label?: string; width?: BusWidth; }
+export interface Register8Properties { label?: string; width?: BusWidth; }
+export interface CounterProperties { label?: string; maxCount?: number; width?: BusWidth; }
+export interface Counter8Properties { label?: string; maxCount?: number; width?: BusWidth; }
+export interface ComparatorProperties { compareValue?: number; width?: BusWidth; }
 export interface Mux2to1Properties { label?: string; }
 export interface MmioRegisterProperties {
   moduleName: string;
@@ -109,7 +115,9 @@ export type NodeProperties =
   | OutputPinProperties
   | GateProperties
   | DffProperties
+  | RegisterProperties
   | Register8Properties
+  | CounterProperties
   | Counter8Properties
   | ComparatorProperties
   | Mux2to1Properties
@@ -189,6 +197,19 @@ export interface ClockState {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Width utilities
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function widthMask(width: number): number {
+  if (width >= 32) return 0xFFFFFFFF >>> 0;
+  return ((1 << width) - 1) >>> 0;
+}
+
+export function getNodeWidth(properties: NodeProperties): number {
+  return (properties as { width?: number }).width ?? 8;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Port template helpers – define the ports for each node type
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -210,9 +231,17 @@ export const NODE_PORT_TEMPLATES: Record<
     inputs:  [port('d', 'd'), port('clk', 'clk'), port('rst', 'rst')],
     outputs: [port('q', 'q'), port('qn', 'q̄')],
   },
+  register: {
+    inputs:  [port('d', 'd', 8), port('clk', 'clk'), port('rst', 'rst'), port('en', 'en')],
+    outputs: [port('q', 'q', 8)],
+  },
   register8: {
     inputs:  [port('d', 'd', 8), port('clk', 'clk'), port('rst', 'rst'), port('en', 'en')],
     outputs: [port('q', 'q', 8)],
+  },
+  counter: {
+    inputs:  [port('clk', 'clk'), port('rst', 'rst'), port('en', 'en')],
+    outputs: [port('count', 'count', 8)],
   },
   counter8: {
     inputs:  [port('clk', 'clk'), port('rst', 'rst'), port('en', 'en')],
@@ -253,6 +282,38 @@ export const NODE_PORT_TEMPLATES: Record<
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Dynamic port template: reads width from properties for parameterized types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function getPortTemplate(
+  type: NodeType,
+  properties: NodeProperties,
+): { inputs: Port[]; outputs: Port[] } {
+  const w = getNodeWidth(properties);
+  switch (type) {
+    case 'register':
+    case 'register8':
+      return {
+        inputs:  [port('d', 'd', w), port('clk', 'clk'), port('rst', 'rst'), port('en', 'en')],
+        outputs: [port('q', 'q', w)],
+      };
+    case 'counter':
+    case 'counter8':
+      return {
+        inputs:  [port('clk', 'clk'), port('rst', 'rst'), port('en', 'en')],
+        outputs: [port('count', 'count', w)],
+      };
+    case 'comparator':
+      return {
+        inputs:  [port('a', 'a', w), port('b', 'b', w)],
+        outputs: [port('eq', 'eq'), port('lt', 'lt'), port('gt', 'gt')],
+      };
+    default:
+      return NODE_PORT_TEMPLATES[type];
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Default properties for each node type
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -265,9 +326,11 @@ export function defaultProperties(type: NodeType, index: number): NodeProperties
     case 'or':              return { label: 'OR' };
     case 'xor':             return { label: 'XOR' };
     case 'dff':             return { label: 'DFF' };
-    case 'register8':       return { label: 'REG8' };
-    case 'counter8':        return { label: 'CTR8', maxCount: 255 };
-    case 'comparator':      return { compareValue: 0xAA };
+    case 'register':        return { label: 'REG', width: 8 };
+    case 'register8':       return { label: 'REG8', width: 8 };
+    case 'counter':         return { label: 'CTR', maxCount: 255, width: 8 };
+    case 'counter8':        return { label: 'CTR8', maxCount: 255, width: 8 };
+    case 'comparator':      return { compareValue: 0xAA, width: 8 };
     case 'mux2to1':         return { label: 'MUX' };
     case 'mmio_register':   return {
       moduleName: 'periph',
@@ -351,8 +414,8 @@ export function createNode(
   index = 0,
   labelOverride?: string,
 ): CircuitNode {
-  const template = NODE_PORT_TEMPLATES[type];
   const props = defaultProperties(type, index);
+  const template = getPortTemplate(type, props);
   const label =
     labelOverride ??
     (type === 'input_pin'
@@ -369,8 +432,17 @@ export function createNode(
     inputPorts:  template.inputs.map(p => ({ ...p, id: `${id}:${p.id}` })),
     outputPorts: template.outputs.map(p => ({ ...p, id: `${id}:${p.id}` })),
     properties:  props,
-    state:       {},
+    state:       initialState(type),
   };
+}
+
+function initialState(type: NodeType): NodeState {
+  switch (type) {
+    case 'register': case 'register8': return { regValue: 0 };
+    case 'counter': case 'counter8': return { count: 0 };
+    case 'dff': return { q: 0 };
+    default: return {};
+  }
 }
 
 // Convenience: make a port ID from node ID + port name
@@ -394,9 +466,9 @@ export const TOOLBOX_ITEMS: ToolboxItem[] = [
   { type: 'or',              label: 'OR Gate',         group: 'Gates',      description: 'Output is 1 when any input is 1' },
   { type: 'xor',             label: 'XOR Gate',        group: 'Gates',      description: 'Output is 1 when inputs differ' },
   { type: 'dff',             label: 'D Flip-Flop',     group: 'Sequential', description: 'Stores one bit, updates on clock edge' },
-  { type: 'register8',       label: '8-bit Register',  group: 'Sequential', description: 'Stores 8 bits, loads on clock edge when enabled' },
-  { type: 'counter8',        label: '8-bit Counter',   group: 'Sequential', description: 'Increments on each clock edge when enabled' },
-  { type: 'comparator',      label: 'Comparator',      group: 'Gates',      description: 'Compares two 8-bit values (EQ/LT/GT)' },
+  { type: 'register',        label: 'Register',         group: 'Sequential', description: 'Stores N bits, loads on clock edge when enabled (configurable width)' },
+  { type: 'counter',         label: 'Counter',          group: 'Sequential', description: 'Increments on each clock edge when enabled (configurable width)' },
+  { type: 'comparator',      label: 'Comparator',      group: 'Gates',      description: 'Compares two N-bit values (EQ/LT/GT, configurable width)' },
   { type: 'mux2to1',         label: 'Mux 2-to-1',      group: 'Gates',      description: 'Selects one of two inputs based on sel' },
   { type: 'mmio_register',   label: 'MMIO Block',      group: 'System',     description: 'Memory-mapped register bridge: hardware ↔ firmware' },
   { type: 'interrupt_output',label: 'Interrupt',       group: 'System',     description: 'Interrupt request output line' },
