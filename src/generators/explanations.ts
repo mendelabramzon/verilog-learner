@@ -116,6 +116,24 @@ end\``,
     ],
   },
 
+  register: {
+    summary: 'N-bit register – stores data. Loads the D input on the rising clock edge when Enable is high. Width configurable (8/16/32).',
+    kind: 'sequential',
+    kindLabel: 'Sequential – Clocked',
+    verilogMapping: `\`always @(posedge clk) begin
+    if (rst) q <= 0;
+    else if (en) q <= d;
+end\``,
+    firmwareInteraction: 'Ideal for holding values that firmware needs to read. Connect Q to an MMIO DATA register.',
+    rustView: `\`// Firmware reads the register value via MMIO:
+let value = unsafe { read_volatile(&(*regs).data) };\``,
+    teachingPoints: [
+      'The Enable pin lets hardware choose WHEN to latch a new value.',
+      'Configure the bus width in Properties to match your data path (8/16/32-bit).',
+      'Firmware reads the captured value; hardware controls when to update it.',
+    ],
+  },
+
   register8: {
     summary: '8-bit register – stores 8 bits. Loads the D input on the rising clock edge when Enable is high.',
     kind: 'sequential',
@@ -131,6 +149,24 @@ let value = unsafe { read_volatile(&(*regs).data) };\``,
       'The Enable pin lets hardware choose WHEN to latch a new value.',
       '8-bit registers are the atoms of data storage in digital hardware.',
       'Firmware reads the captured value; hardware controls when to update it.',
+    ],
+  },
+
+  counter: {
+    summary: 'N-bit counter – increments by 1 on each rising clock edge when Enable is high. Width configurable (8/16/32).',
+    kind: 'sequential',
+    kindLabel: 'Sequential – Clocked',
+    verilogMapping: `\`always @(posedge clk) begin
+    if (rst) count <= 0;
+    else if (en) count <= count + 1;
+end\``,
+    firmwareInteraction: 'Expose the count output via an MMIO register so firmware can read it.',
+    rustView: `\`// Firmware reads counter value:
+let count = periph.count(); // volatile read\``,
+    teachingPoints: [
+      'Counter state is self-referencing: next = current + 1.',
+      'Configure the bus width in Properties to support larger count ranges.',
+      'Connect to MMIO to let firmware track hardware events without interrupt overhead.',
     ],
   },
 

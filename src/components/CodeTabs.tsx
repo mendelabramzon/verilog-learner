@@ -3,13 +3,13 @@ import type { ActiveTab } from '../store/circuitStore';
 import { useCircuitStore } from '../store/circuitStore';
 import { VerilogViewer } from './VerilogViewer';
 import { RustViewer } from './RustViewer';
-import { TimelineView } from './TimelineView';
+import { WaveformViewer } from './waveform/WaveformViewer';
 import { FirmwarePanel } from './FirmwarePanel';
 
 const TABS: Array<{ id: ActiveTab; label: string; color: string }> = [
   { id: 'verilog',  label: 'Verilog',  color: 'text-sky-400'    },
   { id: 'rust',     label: 'Rust',     color: 'text-purple-400' },
-  { id: 'timeline', label: 'Timeline', color: 'text-cyan-400'   },
+  { id: 'timeline', label: 'Waveform', color: 'text-cyan-400'   },
   { id: 'firmware', label: 'Firmware', color: 'text-amber-400'  },
 ];
 
@@ -89,7 +89,7 @@ export function CodeTabs() {
       <div className="flex-1 overflow-hidden">
         {activeTab === 'verilog'  && <VerilogViewer code={verilogCode} />}
         {activeTab === 'rust'     && <RustViewer code={rustCode} />}
-        {activeTab === 'timeline' && <TimelineView timeline={timeline} />}
+        {activeTab === 'timeline' && <WaveformViewer timeline={timeline} />}
         {activeTab === 'firmware' && <FirmwarePanel />}
       </div>
     </div>

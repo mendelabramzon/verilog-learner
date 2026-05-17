@@ -1,6 +1,7 @@
 import { useCircuitStore } from '../store/circuitStore';
 import { ExplanationPanel } from './ExplanationPanel';
 import type { InputPinProperties, OutputPinProperties, MmioRegisterProperties, TimerPwmProperties, SpiControllerProperties, PidControllerProperties, AdcProperties } from '../simulator/types';
+import { getNodeWidth } from '../simulator/types';
 import { EXAMPLES } from '../simulator/examples';
 
 export function PropertiesPanel() {
@@ -105,6 +106,24 @@ export function PropertiesPanel() {
                 onChange={e => updateNodeProp(node.id, 'pinName', e.target.value)}
                 className="w-full bg-slate-800 border border-slate-600 text-slate-200 text-xs rounded px-2 py-1 focus:outline-none focus:border-cyan-500"
               />
+            </div>
+          </div>
+        )}
+
+        {(node.type === 'register' || node.type === 'register8' || node.type === 'counter' || node.type === 'counter8' || node.type === 'comparator') && (
+          <div className="space-y-2">
+            <h4 className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Settings</h4>
+            <div className="space-y-1.5">
+              <label className="block text-xs text-slate-400">Bus Width</label>
+              <select
+                value={getNodeWidth(node.properties)}
+                onChange={e => updateNodeProp(node.id, 'width', Number(e.target.value))}
+                className="w-full bg-slate-800 border border-slate-600 text-slate-200 text-xs rounded px-2 py-1.5 focus:outline-none focus:border-cyan-500"
+              >
+                <option value={8}>8-bit</option>
+                <option value={16}>16-bit</option>
+                <option value={32}>32-bit</option>
+              </select>
             </div>
           </div>
         )}
@@ -293,38 +312,46 @@ export function PropertiesPanel() {
         )}
 
         {/* Sequential state display */}
-        {['counter8', 'register8', 'dff'].includes(node.type) && (
+        {['counter', 'counter8', 'register', 'register8', 'dff'].includes(node.type) && (
           <div className="space-y-2">
             <h4 className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Current State</h4>
             <div className="bg-slate-800 rounded p-2 font-mono text-xs">
-              {node.type === 'counter8' && (
-                <div className="space-y-1">
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">count (dec)</span>
-                    <span className="text-violet-400">{node.state.count ?? 0}</span>
+              {(node.type === 'counter' || node.type === 'counter8') && (() => {
+                const w = getNodeWidth(node.properties);
+                const hexChars = Math.ceil(w / 4);
+                return (
+                  <div className="space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">count (dec)</span>
+                      <span className="text-violet-400">{node.state.count ?? 0}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">count (hex)</span>
+                      <span className="text-cyan-400">0x{(node.state.count ?? 0).toString(16).padStart(hexChars, '0').toUpperCase()}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">count (bin)</span>
+                      <span className="text-slate-300">{(node.state.count ?? 0).toString(2).padStart(w, '0')}</span>
+                    </div>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">count (hex)</span>
-                    <span className="text-cyan-400">0x{(node.state.count ?? 0).toString(16).padStart(2, '0').toUpperCase()}</span>
+                );
+              })()}
+              {(node.type === 'register' || node.type === 'register8') && (() => {
+                const w = getNodeWidth(node.properties);
+                const hexChars = Math.ceil(w / 4);
+                return (
+                  <div className="space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">value (hex)</span>
+                      <span className="text-cyan-400">0x{((node.state.regValue ?? 0)).toString(16).padStart(hexChars, '0').toUpperCase()}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">value (bin)</span>
+                      <span className="text-slate-300">{(node.state.regValue ?? 0).toString(2).padStart(w, '0')}</span>
+                    </div>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">count (bin)</span>
-                    <span className="text-slate-300">{(node.state.count ?? 0).toString(2).padStart(8, '0')}</span>
-                  </div>
-                </div>
-              )}
-              {node.type === 'register8' && (
-                <div className="space-y-1">
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">value (hex)</span>
-                    <span className="text-cyan-400">0x{((node.state.regValue ?? 0)).toString(16).padStart(2, '0').toUpperCase()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">value (bin)</span>
-                    <span className="text-slate-300">{(node.state.regValue ?? 0).toString(2).padStart(8, '0')}</span>
-                  </div>
-                </div>
-              )}
+                );
+              })()}
               {node.type === 'dff' && (
                 <div className="flex justify-between">
                   <span className="text-slate-500">Q</span>

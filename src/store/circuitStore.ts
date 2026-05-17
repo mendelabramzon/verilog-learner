@@ -18,7 +18,7 @@ import type {
   Circuit, Wire, SignalMap, ClockState, NodeType,
   InputPinProperties, MmioRegisterProperties,
 } from '../simulator/types';
-import { createNode } from '../simulator/types';
+import { createNode, getPortTemplate, widthMask } from '../simulator/types';
 import {
   evaluateCircuit, stepClock, resetCircuit,
 } from '../simulator/circuit';
@@ -197,10 +197,35 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
     const { circuit } = get();
     const nodes = circuit.nodes.map(n => {
       if (n.id !== nodeId) return n;
-      return { ...n, properties: { ...n.properties, [key]: value } };
+      const newProps = { ...n.properties, [key]: value };
+      if (key === 'width') {
+        const newWidth = value as number;
+        if ((n.type === 'counter' || n.type === 'counter8') && 'maxCount' in newProps) {
+          const oldMax = (n.properties as { maxCount?: number }).maxCount;
+          const oldWidth = (n.properties as { width?: number }).width ?? 8;
+          if (oldMax === undefined || oldMax === widthMask(oldWidth)) {
+            (newProps as { maxCount: number }).maxCount = widthMask(newWidth);
+          }
+        }
+        const template = getPortTemplate(n.type, newProps);
+        return {
+          ...n,
+          properties: newProps,
+          inputPorts: template.inputs.map(p => ({ ...p, id: `${n.id}:${p.id}` })),
+          outputPorts: template.outputs.map(p => ({ ...p, id: `${n.id}:${p.id}` })),
+          state: {},
+        };
+      }
+      return { ...n, properties: newProps };
     });
     const newCircuit: Circuit = { ...circuit, nodes };
-    set(buildState(newCircuit));
+    const needsTimelineRebuild = key === 'width';
+    if (needsTimelineRebuild) {
+      const timeline = rebuildTimeline(newCircuit);
+      set({ ...buildState(newCircuit), timeline });
+    } else {
+      set(buildState(newCircuit));
+    }
   },
 
   // ── Selection ────────────────────────────────────────────────────────────

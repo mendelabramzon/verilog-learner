@@ -9,15 +9,16 @@
 
 import type {
   Circuit, CircuitNode, SignalValue, SignalMap, PortSignal,
-  InputPinProperties, ComparatorProperties, NodeState, Wire,
+  InputPinProperties, ComparatorProperties, CounterProperties, NodeState, Wire,
 } from './types';
+import { getNodeWidth } from './types';
 import {
   evalNot, evalAnd, evalOr, evalXor, evalComparator, evalMux,
   bitsToNumber, numberToBits, unknownBus,
 } from './gates';
 import {
-  stepDff, stepRegister8, stepCounter8,
-  dffOutputs, register8Outputs, counter8Outputs,
+  stepDff, stepRegister, stepCounter,
+  dffOutputs, registerOutputs, counterOutputs,
 } from './sequential';
 import { stepMmioOnClock, mmioHardwareOutputs } from './memoryMapped';
 import { stepTimerPwm, timerPwmOutputs } from './timerPwm';
@@ -76,7 +77,7 @@ function resolve(map: WireMap, portId: string): string | undefined {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function topoSort(circuit: Circuit): string[] {
-  const SEQUENTIAL: Set<string> = new Set(['dff', 'register8', 'counter8', 'mmio_register', 'interrupt_output', 'input_pin', 'timer_pwm_capture', 'spi_controller', 'pid_controller', 'adc']);
+  const SEQUENTIAL: Set<string> = new Set(['dff', 'register', 'register8', 'counter', 'counter8', 'mmio_register', 'interrupt_output', 'input_pin', 'timer_pwm_capture', 'spi_controller', 'pid_controller', 'adc']);
 
   // Build dependency graph: nodeId → set of nodeIds it depends on
   const nodeMap = new Map(circuit.nodes.map(n => [n.id, n]));
@@ -212,11 +213,12 @@ export function evaluateCombinational(
       }
 
       case 'comparator': {
-        const aBits = inpBus(`${nodeId}:a`, 8);
+        const cmpWidth = getNodeWidth(node.properties);
+        const aBits = inpBus(`${nodeId}:a`, cmpWidth);
         const bSrc = resolve(wireMap, `${nodeId}:b`);
         const bBits = bSrc
-          ? getBus(signals, bSrc, 8)
-          : numberToBits((node.properties as ComparatorProperties).compareValue ?? 0, 8);
+          ? getBus(signals, bSrc, cmpWidth)
+          : numberToBits((node.properties as ComparatorProperties).compareValue ?? 0, cmpWidth);
         const { eq, lt, gt } = evalComparator(aBits, bBits);
         setOut('eq', eq);
         setOut('lt', lt);
@@ -240,14 +242,18 @@ export function evaluateCombinational(
         break;
       }
 
+      case 'register':
       case 'register8': {
-        const bits = register8Outputs(node.state);
+        const regW = getNodeWidth(node.properties);
+        const bits = registerOutputs(node.state, regW);
         setOutBus('q', bits);
         break;
       }
 
+      case 'counter':
       case 'counter8': {
-        const bits = counter8Outputs(node.state);
+        const ctrW = getNodeWidth(node.properties);
+        const bits = counterOutputs(node.state, ctrW);
         setOutBus('count', bits);
         break;
       }
@@ -343,17 +349,21 @@ export function stepClock(
         newState = stepDff(node.state, d, rst);
         break;
       }
+      case 'register':
       case 'register8': {
-        const dBits = inpBus(`${node.id}:d`, 8);
+        const regW = getNodeWidth(node.properties);
+        const dBits = inpBus(`${node.id}:d`, regW);
         const rst = inp(`${node.id}:rst`);
         const en = inp(`${node.id}:en`);
-        newState = stepRegister8(node.state, dBits, rst, en);
+        newState = stepRegister(node.state, dBits, rst, en, regW);
         break;
       }
+      case 'counter':
       case 'counter8': {
+        const ctrW = getNodeWidth(node.properties);
         const rst = inp(`${node.id}:rst`);
         const en = inp(`${node.id}:en`);
-        newState = stepCounter8(node.state, rst, en);
+        newState = stepCounter(node.state, rst, en, ctrW, (node.properties as CounterProperties).maxCount);
         break;
       }
       case 'mmio_register': {
@@ -417,13 +427,27 @@ export function evaluateCircuit(circuit: Circuit): SignalMap {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function resetCircuit(circuit: Circuit): Circuit {
-  const nodes = circuit.nodes.map(node => ({
-    ...node,
-    state: { clockedThisCycle: false } as NodeState,
-    properties:
-      node.type === 'input_pin'
-        ? { ...(node.properties as InputPinProperties), value: 0 as const }
-        : node.properties,
-  }));
+  const nodes = circuit.nodes.map(node => {
+    let state: NodeState = { clockedThisCycle: false };
+    switch (node.type) {
+      case 'register': case 'register8':
+        state = { ...state, regValue: 0 };
+        break;
+      case 'counter': case 'counter8':
+        state = { ...state, count: 0 };
+        break;
+      case 'dff':
+        state = { ...state, q: 0 };
+        break;
+    }
+    return {
+      ...node,
+      state,
+      properties:
+        node.type === 'input_pin'
+          ? { ...(node.properties as InputPinProperties), value: 0 as const }
+          : node.properties,
+    };
+  });
   return { ...circuit, nodes };
 }
